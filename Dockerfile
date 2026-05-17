@@ -48,7 +48,9 @@ USER nextjs
 EXPOSE 3000
 
 # Health check for Coolify
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+# Use 127.0.0.1 explicitly — wget on alpine resolves "localhost" to ::1 first
+# but Next.js standalone listens on 0.0.0.0 (IPv4 only), so IPv6 probe fails.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
 CMD ["node", "apps/web/server.js"]
