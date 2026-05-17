@@ -1,0 +1,24 @@
+{
+  "name": "stoktakip-pro",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bulut tabanlı profesyonel stok yönetim sistemi",
+  "scripts": {
+    "dev": "pnpm --dir apps/web dev",
+    "dev:lan": "node scripts/lan-server.mjs dev",
+    "dev:lan:https": "node scripts/lan-server.mjs dev --https",
+    "build": "pnpm --dir apps/web build",
+    "start": "node scripts/lan-server.mjs start",
+    "start:lan": "node scripts/lan-server.mjs start",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000",
+    "tunnel:local": "npx --yes localtunnel --port 3000 --local-host localhost",
+    "lint": "pnpm --dir apps/web lint",
+    "test": "pnpm --dir apps/web test",
+    "test:e2e": "pnpm --dir apps/web test:e2e",
+    "types:gen": "supabase gen types typescript --linked > apps/web/lib/supabase/database.types.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}
