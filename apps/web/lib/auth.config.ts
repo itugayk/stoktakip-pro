@@ -30,6 +30,13 @@ export const authConfig = {
       const isPublic =
         pathname === "/" ||
         pathname.startsWith("/api/auth") ||
+        // Container/uptime probes — must NOT redirect, otherwise wget follows
+        // the 307 to AUTH_URL (production) and SSL-fails before cert exists.
+        pathname.startsWith("/api/health") ||
+        // Public REST API (Bearer-token auth handled inside the route).
+        pathname.startsWith("/api/v1") ||
+        // Stripe webhook (HMAC-signed, no session).
+        pathname.startsWith("/api/stripe") ||
         pathname.startsWith("/_next");
 
       if (isLoggedIn && isAuthPage) {
