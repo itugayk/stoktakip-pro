@@ -6,7 +6,9 @@
 
 FROM node:22-alpine AS base
 RUN apk add --no-cache libc6-compat openssl
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin pnpm to the same major used to generate pnpm-lock.yaml (avoids
+# frozen-lockfile compatibility drift between local + CI builds).
+RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
 
 # --- Dependencies ---
 FROM base AS deps
