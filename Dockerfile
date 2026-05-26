@@ -56,13 +56,15 @@ COPY --from=builder /app/apps/web/public ./apps/web/public
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 
-# Prisma assets — schema + raw SQL + generated client
-# Standalone tracer sometimes misses these; copy explicitly so prisma migrate
-# deploy works inside the container at startup.
+# Prisma assets — schema + raw SQL + generated client.
+# Default prisma generate (no `output` in schema) writes to the pnpm-hoisted
+# `.pnpm/@prisma+client.../node_modules/.prisma/client`; the symlink in
+# `apps/web/node_modules/@prisma/client` resolves there. So copy the .pnpm
+# tree (covers prisma engines + generated client) and the apps/web prisma
+# folder (schema + raw SQL needed by `prisma migrate deploy` at startup).
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/prisma ./apps/web/prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.pnpm ./node_modules/.pnpm
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/node_modules/@prisma ./apps/web/node_modules/@prisma
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/node_modules/.prisma ./apps/web/node_modules/.prisma
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/node_modules ./apps/web/node_modules
 
 # Entrypoint: apply migrations at startup, then start the Next.js server.
 COPY --chown=nextjs:nodejs docker-entrypoint.sh /app/docker-entrypoint.sh

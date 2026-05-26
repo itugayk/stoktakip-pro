@@ -8,10 +8,6 @@
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["views", "postgresqlExtensions"]
-  // Force the generated client into apps/web/node_modules/.prisma/client.
-  // Default + pnpm symlinks send it under node_modules/.pnpm/... which makes
-  // Docker COPY in the multi-stage build fail to find it.
-  output          = "../node_modules/.prisma/client"
 }
 
 datasource db {
