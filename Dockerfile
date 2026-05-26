@@ -24,8 +24,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY . .
 
+# IMPORTANT: don't set NODE_ENV=production in the builder stage.
+# pnpm/npm skip devDependencies in production mode, which breaks
+# `next build` (it needs typescript, eslint-config-next, @types/*).
+# Production NODE_ENV is set only in the runner stage below.
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
 
 # Prisma client must be generated BEFORE Next.js build,
 # otherwise Server Actions that import @prisma/client fail to compile.
