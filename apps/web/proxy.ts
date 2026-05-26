@@ -12,6 +12,11 @@ export const proxy = auth;
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/auth|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Exclude:
+    //  - Next.js internals (_next/static, _next/image)
+    //  - Static assets (icons, images)
+    //  - PWA assets (manifest.json, sw.js, *.webmanifest)
+    //  - Auth API (NextAuth handles its own routing)
+    "/((?!_next/static|_next/image|favicon.ico|manifest\\.json|sw\\.js|robots\\.txt|sitemap\\.xml|api/auth|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|webmanifest)$).*)",
   ],
 };
