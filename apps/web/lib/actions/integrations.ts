@@ -2,7 +2,16 @@
 
 import { withCompany, ok, parseInput, z, ERR } from "@/lib/server";
 import { findProvider } from "@/lib/integrations/registry";
-import type { IntegrationCategory, IntegrationStatus } from "@prisma/client";
+
+// Mirror prisma/schema.prisma enums (avoid named imports from @prisma/client
+// which break under pnpm symlinks in Docker — see stripe webhook for context).
+type IntegrationCategory =
+  | "marketplace"
+  | "accounting"
+  | "shipping"
+  | "e_invoice"
+  | "messaging";
+type IntegrationStatus = "inactive" | "connecting" | "active" | "error";
 
 export interface Connection {
   id: string;

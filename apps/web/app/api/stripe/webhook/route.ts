@@ -1,7 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/log";
-import type { SubscriptionPlan } from "@prisma/client";
+
+// Mirrors prisma/schema.prisma `enum SubscriptionPlan { ... }`.
+// Inlined here (instead of `import type { SubscriptionPlan } from "@prisma/client"`)
+// because the @prisma/client re-export chain can break inside Docker when
+// pnpm's symlink layout shifts between local + container builds.
+type SubscriptionPlan = "free" | "starter" | "professional" | "enterprise";
 
 /**
  * Stripe webhook receiver. Verifies the signature, then updates the
