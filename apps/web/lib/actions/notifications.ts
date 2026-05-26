@@ -1,6 +1,6 @@
 "use server";
 
-import { withAuth, ok, parseInput, z, ERR } from "@/lib/server";
+import { withAuth, ok, parseInput, z } from "@/lib/server";
 
 export type NotificationType =
   | "low_stock"
@@ -25,76 +25,62 @@ const listSchema = z.object({
   limit: z.number().int().positive().max(200).optional(),
 });
 
-export const listNotifications = withAuth<z.input<typeof listSchema> | undefined, Notification[]>(
-  async (ctx, raw) => {
-    const filter = parseInput(listSchema, raw ?? {});
-    if (ctx.demo) return ok([]);
+export const listNotifications = withAuth<
+  z.input<typeof listSchema> | undefined,
+  Notification[]
+>(async (ctx, raw) => {
+  const filter = parseInput(listSchema, raw ?? {});
 
-    let q = ctx.supabase
-      .from("notifications")
-      .select("id, type, title, message, is_read, created_at, metadata")
-      .eq("user_id", ctx.userId)
-      .order("created_at", { ascending: false })
-      .limit(filter.limit ?? 50);
+  const rows = await ctx.prisma.notification.findMany({
+    where: {
+      userId: ctx.userId,
+      ...(filter.unreadOnly ? { isRead: false } : {}),
+      ...(filter.type ? { type: filter.type as NotificationType } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take: filter.limit ?? 50,
+  });
 
-    if (filter.unreadOnly) q = q.eq("is_read", false);
-    if (filter.type) q = q.eq("type", filter.type);
-
-    const { data, error } = await q;
-    if (error) throw ERR.database(error.message);
-
-    return ok(
-      (data ?? []).map((n) => ({
-        id: n.id,
-        type: n.type as NotificationType,
-        title: n.title,
-        message: n.message,
-        isRead: n.is_read,
-        createdAt: n.created_at,
-        metadata: (n.metadata as Record<string, unknown>) ?? undefined,
-      }))
-    );
-  }
-);
+  return ok(
+    rows.map((n) => ({
+      id: n.id,
+      type: n.type as NotificationType,
+      title: n.title,
+      message: n.message,
+      isRead: n.isRead,
+      createdAt: n.createdAt.toISOString(),
+      metadata: (n.metadata as Record<string, unknown>) ?? undefined,
+    }))
+  );
+});
 
 export const getUnreadCount = withAuth<void, number>(async (ctx) => {
-  if (ctx.demo) return ok(0);
-  const { count, error } = await ctx.supabase
-    .from("notifications")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", ctx.userId)
-    .eq("is_read", false);
-  if (error) throw ERR.database(error.message);
-  return ok(count ?? 0);
+  const count = await ctx.prisma.notification.count({
+    where: { userId: ctx.userId, isRead: false },
+  });
+  return ok(count);
 });
 
 export const markNotificationRead = withAuth<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase
-    .from("notifications")
-    .update({ is_read: true })
-    .eq("id", id)
-    .eq("user_id", ctx.userId);
-  if (error) throw ERR.database(error.message);
+  await ctx.prisma.notification.updateMany({
+    where: { id, userId: ctx.userId },
+    data: { isRead: true },
+  });
   return ok();
 });
 
-export const markAllNotificationsRead = withAuth<void, { updated: number }>(async (ctx) => {
-  if (ctx.demo) return ok({ updated: 0 });
-  const { data, error } = await ctx.supabase
-    .from("notifications")
-    .update({ is_read: true })
-    .eq("user_id", ctx.userId)
-    .eq("is_read", false)
-    .select("id");
-  if (error) throw ERR.database(error.message);
-  return ok({ updated: data?.length ?? 0 });
-});
+export const markAllNotificationsRead = withAuth<void, { updated: number }>(
+  async (ctx) => {
+    const res = await ctx.prisma.notification.updateMany({
+      where: { userId: ctx.userId, isRead: false },
+      data: { isRead: true },
+    });
+    return ok({ updated: res.count });
+  }
+);
 
 // ============================================
 // User preferences for notification channels.
-// Stored under profiles.preferences (JSON). Schema below is open-ended so the
-// shape can evolve without a migration.
 // ============================================
 
 export interface NotificationPrefs {
@@ -102,41 +88,43 @@ export interface NotificationPrefs {
 }
 
 const prefsSchema = z.object({
-  channels: z.record(z.string(), z.array(z.enum(["in_app", "email", "push"]))),
+  channels: z.record(
+    z.string(),
+    z.array(z.enum(["in_app", "email", "push"]))
+  ),
 });
 
-export const getNotificationPrefs = withAuth<void, NotificationPrefs>(async (ctx) => {
-  if (ctx.demo) return ok({ channels: {} });
-  // `profiles.preferences` doesn't exist by default; we store it inline. If
-  // the column isn't there yet, treat as empty.
-  const { data } = await ctx.supabase
-    .from("profiles")
-    .select("preferences")
-    .eq("id", ctx.userId)
-    .maybeSingle();
-  const prefs = (data as { preferences?: { notifications?: NotificationPrefs } } | null)?.preferences?.notifications;
-  return ok(prefs ?? { channels: {} });
-});
-
-export const updateNotificationPrefs = withAuth<z.input<typeof prefsSchema>, void>(
-  async (ctx, raw) => {
-    const prefs = parseInput(prefsSchema, raw);
-    if (ctx.demo) return ok();
-    // Read-modify-write so other preferences keys aren't clobbered.
-    const { data: existing } = await ctx.supabase
-      .from("profiles")
-      .select("preferences")
-      .eq("id", ctx.userId)
-      .single();
-    const merged = {
-      ...(existing as { preferences?: Record<string, unknown> } | null)?.preferences,
-      notifications: prefs,
-    };
-    const { error } = await ctx.supabase
-      .from("profiles")
-      .update({ preferences: merged } as never)
-      .eq("id", ctx.userId);
-    if (error) throw ERR.database(error.message);
-    return ok();
+export const getNotificationPrefs = withAuth<void, NotificationPrefs>(
+  async (ctx) => {
+    const user = await ctx.prisma.user.findUnique({
+      where: { id: ctx.userId },
+      select: { preferences: true },
+    });
+    const prefs = (
+      user?.preferences as { notifications?: NotificationPrefs } | null
+    )?.notifications;
+    return ok(prefs ?? { channels: {} });
   }
 );
+
+export const updateNotificationPrefs = withAuth<
+  z.input<typeof prefsSchema>,
+  void
+>(async (ctx, raw) => {
+  const prefs = parseInput(prefsSchema, raw);
+
+  // Read-modify-write so other preferences keys aren't clobbered.
+  const user = await ctx.prisma.user.findUnique({
+    where: { id: ctx.userId },
+    select: { preferences: true },
+  });
+  const merged = {
+    ...((user?.preferences as Record<string, unknown>) ?? {}),
+    notifications: prefs,
+  };
+  await ctx.prisma.user.update({
+    where: { id: ctx.userId },
+    data: { preferences: merged },
+  });
+  return ok();
+});

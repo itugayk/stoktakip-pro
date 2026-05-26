@@ -2,6 +2,7 @@
 
 import { withCompany, ok, parseInput, z, ERR } from "@/lib/server";
 import { findProvider } from "@/lib/integrations/registry";
+import type { IntegrationCategory, IntegrationStatus } from "@prisma/client";
 
 export interface Connection {
   id: string;
@@ -22,74 +23,89 @@ const upsertSchema = z.object({
 });
 
 export const listConnections = withCompany<void, Connection[]>(async (ctx) => {
-  if (ctx.demo) return ok([]);
-
-  const { data, error } = await ctx.supabase
-    .from("integration_connections")
-    .select("id, provider, category, name, status, last_sync_at, last_error, created_at")
-    .order("created_at", { ascending: false });
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.integrationConnection.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      provider: true,
+      category: true,
+      name: true,
+      status: true,
+      lastSyncAt: true,
+      lastError: true,
+      createdAt: true,
+    },
+  });
 
   return ok(
-    (data ?? []).map((r) => ({
+    rows.map((r) => ({
       id: r.id,
       provider: r.provider,
       category: r.category,
       name: r.name,
       status: r.status as Connection["status"],
-      lastSyncAt: r.last_sync_at ?? undefined,
-      lastError: r.last_error ?? undefined,
-      createdAt: r.created_at,
+      lastSyncAt: r.lastSyncAt?.toISOString() ?? undefined,
+      lastError: r.lastError ?? undefined,
+      createdAt: r.createdAt.toISOString(),
     }))
   );
 });
 
-export const upsertConnection = withCompany<z.input<typeof upsertSchema>, { id: string }>(
-  async (ctx, raw) => {
-    const data = parseInput(upsertSchema, raw);
-    const provider = findProvider(data.provider);
-    if (!provider) throw ERR.validation(`Bilinmeyen sağlayıcı: ${data.provider}`);
+export const upsertConnection = withCompany<
+  z.input<typeof upsertSchema>,
+  { id: string }
+>(async (ctx, raw) => {
+  const data = parseInput(upsertSchema, raw);
+  const provider = findProvider(data.provider);
+  if (!provider)
+    throw ERR.validation(`Bilinmeyen sağlayıcı: ${data.provider}`);
 
-    // Validate required config keys.
-    for (const f of provider.meta.configSchema) {
-      if (f.required && !data.config[f.key]) {
-        throw ERR.validation(`${f.label} zorunlu`, f.key);
-      }
+  // Validate required config keys.
+  for (const f of provider.meta.configSchema) {
+    if (f.required && !data.config[f.key]) {
+      throw ERR.validation(`${f.label} zorunlu`, f.key);
     }
-
-    if (ctx.demo) return ok({ id: data.id ?? `c-${Date.now()}` });
-
-    const payload = {
-      provider: data.provider,
-      category: provider.meta.category,
-      name: data.name,
-      config: data.config,
-      status: provider.stub ? "inactive" : "active",
-    };
-
-    if (data.id) {
-      const { error } = await ctx.supabase
-        .from("integration_connections")
-        .update(payload)
-        .eq("id", data.id);
-      if (error) throw ERR.database(error.message);
-      return ok({ id: data.id });
-    }
-
-    const { data: row, error } = await ctx.supabase
-      .from("integration_connections")
-      .insert({ ...payload, company_id: ctx.companyId, created_by: ctx.userId } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    return ok({ id: row.id });
   }
-);
+
+  const payload = {
+    provider: data.provider,
+    category: provider.meta.category as IntegrationCategory,
+    name: data.name,
+    config: data.config,
+    status: (provider.stub ? "inactive" : "active") as IntegrationStatus,
+  };
+
+  if (data.id) {
+    const exists = await ctx.prisma.integrationConnection.findFirst({
+      where: { id: data.id, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!exists) throw ERR.notFound("Bağlantı");
+
+    await ctx.prisma.integrationConnection.update({
+      where: { id: data.id },
+      data: payload,
+    });
+    return ok({ id: data.id });
+  }
+
+  const row = await ctx.prisma.integrationConnection.create({
+    data: {
+      ...payload,
+      companyId: ctx.companyId,
+      createdById: ctx.userId,
+    },
+    select: { id: true },
+  });
+  return ok({ id: row.id });
+});
 
 export const deleteConnection = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("integration_connections").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.integrationConnection.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Bağlantı");
   return ok();
 });
 
@@ -97,27 +113,28 @@ export const deleteConnection = withCompany<string, void>(async (ctx, id) => {
  * Manual "Test connection" — for stub providers, returns a clear failure with
  * the explanation so the UI can show it.
  */
-export const testConnection = withCompany<string, { ok: boolean; message: string }>(
-  async (ctx, id) => {
-    if (ctx.demo) return ok({ ok: false, message: "Demo modunda test edilemez" });
+export const testConnection = withCompany<
+  string,
+  { ok: boolean; message: string }
+>(async (ctx, id) => {
+  const conn = await ctx.prisma.integrationConnection.findFirst({
+    where: { id, companyId: ctx.companyId },
+    select: { provider: true },
+  });
+  if (!conn) throw ERR.notFound("Bağlantı");
 
-    const { data: conn } = await ctx.supabase
-      .from("integration_connections")
-      .select("provider")
-      .eq("id", id)
-      .single();
-    if (!conn) throw ERR.notFound("Bağlantı");
+  const provider = findProvider(conn.provider);
+  if (!provider) return ok({ ok: false, message: "Sağlayıcı tanımsız" });
 
-    const provider = findProvider(conn.provider);
-    if (!provider) return ok({ ok: false, message: "Sağlayıcı tanımsız" });
-
-    if (provider.stub) {
-      return ok({
-        ok: false,
-        message: `${provider.meta.label} stub durumda — gerçek API çağrısı henüz bağlanmadı.`,
-      });
-    }
-
-    return ok({ ok: true, message: `${provider.meta.label} bağlantısı doğrulandı` });
+  if (provider.stub) {
+    return ok({
+      ok: false,
+      message: `${provider.meta.label} stub durumda — gerçek API çağrısı henüz bağlanmadı.`,
+    });
   }
-);
+
+  return ok({
+    ok: true,
+    message: `${provider.meta.label} bağlantısı doğrulandı`,
+  });
+});

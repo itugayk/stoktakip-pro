@@ -1,6 +1,6 @@
 "use server";
 
-import { demoWarehouses, demoSuppliers, demoCustomers } from "@/lib/demo-data";
+import type { Prisma } from "@prisma/client";
 import type { Warehouse, Supplier, Customer } from "@/lib/types";
 import {
   toWarehouse,
@@ -24,36 +24,35 @@ import {
 // WAREHOUSES
 // ============================================
 export const getWarehouses = withAuth<void, Warehouse[]>(async (ctx) => {
-  if (ctx.demo) return ok(demoWarehouses);
+  const [warehouses, inventoryRows] = await Promise.all([
+    ctx.prisma.warehouse.findMany({
+      where: { companyId: ctx.companyId, isActive: true },
+      orderBy: { name: "asc" },
+      include: { manager: { select: { fullName: true } } },
+    }),
+    ctx.prisma.inventory.findMany({
+      where: { companyId: ctx.companyId },
+      select: { warehouseId: true, productId: true, quantity: true },
+    }),
+  ]);
 
-  const { data, error } = await ctx.supabase
-    .from("warehouses")
-    .select(`
-      *,
-      manager:profiles!warehouses_manager_id_fkey(full_name)
-    `)
-    .eq("is_active", true)
-    .order("name");
-
-  if (error) throw ERR.database(error.message);
-
-  const { data: inventoryData } = await ctx.supabase
-    .from("inventory")
-    .select("warehouse_id, product_id, quantity");
-
-  const stats = new Map<string, { products: Set<string>; totalQty: number }>();
-  (inventoryData ?? []).forEach((inv) => {
-    const s = stats.get(inv.warehouse_id) ?? { products: new Set<string>(), totalQty: 0 };
-    s.products.add(inv.product_id);
-    s.totalQty += inv.quantity || 0;
-    stats.set(inv.warehouse_id, s);
-  });
+  const stats = new Map<
+    string,
+    { products: Set<string>; totalQty: number }
+  >();
+  for (const inv of inventoryRows) {
+    const s =
+      stats.get(inv.warehouseId) ??
+      { products: new Set<string>(), totalQty: 0 };
+    s.products.add(inv.productId);
+    s.totalQty += Number(inv.quantity);
+    stats.set(inv.warehouseId, s);
+  }
 
   return ok(
-    (data ?? []).map((row) => {
-      const wh = row as unknown as WarehouseJoinedRow;
+    warehouses.map((wh) => {
       const s = stats.get(wh.id);
-      return toWarehouse(wh, {
+      return toWarehouse(wh as WarehouseJoinedRow, {
         totalProducts: s?.products.size ?? 0,
         totalQuantity: s?.totalQty ?? 0,
       });
@@ -72,18 +71,21 @@ export const createWarehouse = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(warehouseInputSchema, raw);
-  if (ctx.demo) return ok();
 
-  const insert = fromWarehouse({ ...data, companyId: ctx.companyId });
-  const { error } = await ctx.supabase.from("warehouses").insert(insert as never);
-  if (error) throw ERR.database(error.message);
+  const insert = fromWarehouse({
+    ...data,
+    companyId: ctx.companyId,
+  }) as Prisma.WarehouseUncheckedCreateInput;
+
+  await ctx.prisma.warehouse.create({ data: insert });
   return ok();
 });
 
 export const deleteWarehouse = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("warehouses").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.warehouse.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Depo");
   return ok();
 });
 
@@ -91,15 +93,11 @@ export const deleteWarehouse = withCompany<string, void>(async (ctx, id) => {
 // SUPPLIERS
 // ============================================
 export const getSuppliers = withAuth<void, Supplier[]>(async (ctx) => {
-  if (ctx.demo) return ok(demoSuppliers);
-
-  const { data, error } = await ctx.supabase
-    .from("suppliers")
-    .select("*")
-    .order("name");
-
-  if (error) throw ERR.database(error.message);
-  return ok((data ?? []).map((s) => toSupplier(s)));
+  const rows = await ctx.prisma.supplier.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { name: "asc" },
+  });
+  return ok(rows.map((s) => toSupplier(s)));
 });
 
 const supplierInputSchema = z.object({
@@ -116,18 +114,19 @@ export const createSupplier = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(supplierInputSchema, raw);
-  if (ctx.demo) return ok();
-
-  const insert = fromSupplier({ ...data, companyId: ctx.companyId });
-  const { error } = await ctx.supabase.from("suppliers").insert(insert as never);
-  if (error) throw ERR.database(error.message);
+  const insert = fromSupplier({
+    ...data,
+    companyId: ctx.companyId,
+  }) as Prisma.SupplierUncheckedCreateInput;
+  await ctx.prisma.supplier.create({ data: insert });
   return ok();
 });
 
 export const deleteSupplier = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("suppliers").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.supplier.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Tedarikçi");
   return ok();
 });
 
@@ -135,15 +134,11 @@ export const deleteSupplier = withCompany<string, void>(async (ctx, id) => {
 // CUSTOMERS
 // ============================================
 export const getCustomers = withAuth<void, Customer[]>(async (ctx) => {
-  if (ctx.demo) return ok(demoCustomers);
-
-  const { data, error } = await ctx.supabase
-    .from("customers")
-    .select("*")
-    .order("name");
-
-  if (error) throw ERR.database(error.message);
-  return ok((data ?? []).map((c) => toCustomer(c)));
+  const rows = await ctx.prisma.customer.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { name: "asc" },
+  });
+  return ok(rows.map((c) => toCustomer(c)));
 });
 
 const customerInputSchema = z.object({
@@ -160,17 +155,18 @@ export const createCustomer = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(customerInputSchema, raw);
-  if (ctx.demo) return ok();
-
-  const insert = fromCustomer({ ...data, companyId: ctx.companyId });
-  const { error } = await ctx.supabase.from("customers").insert(insert as never);
-  if (error) throw ERR.database(error.message);
+  const insert = fromCustomer({
+    ...data,
+    companyId: ctx.companyId,
+  }) as Prisma.CustomerUncheckedCreateInput;
+  await ctx.prisma.customer.create({ data: insert });
   return ok();
 });
 
 export const deleteCustomer = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("customers").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.customer.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Müşteri");
   return ok();
 });

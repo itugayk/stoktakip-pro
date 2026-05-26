@@ -1,6 +1,15 @@
 "use server";
 
-import { withAuth, withRole, ok, fail, parseInput, z, ERR, logAudit } from "@/lib/server";
+import {
+  withAuth,
+  withRole,
+  ok,
+  fail,
+  parseInput,
+  z,
+  ERR,
+  logAudit,
+} from "@/lib/server";
 import type { UserRole } from "@/lib/types";
 
 // ============================================
@@ -40,41 +49,36 @@ const TABLE_LABELS: Record<string, string> = {
   stock_counts: "sayım",
 };
 
-export const getActivityFeed = withAuth<z.input<typeof activitySchema> | undefined, ActivityEntry[]>(
-  async (ctx, raw) => {
-    const { limit = 20 } = parseInput(activitySchema, raw ?? {});
-    if (ctx.demo) return ok([]);
+export const getActivityFeed = withAuth<
+  z.input<typeof activitySchema> | undefined,
+  ActivityEntry[]
+>(async (ctx, raw) => {
+  const { limit = 20 } = parseInput(activitySchema, raw ?? {});
 
-    const { data, error } = await ctx.supabase
-      .from("audit_log")
-      .select(`
-        id, action, table_name, record_id, user_id, created_at,
-        user:profiles!audit_log_user_id_fkey(full_name)
-      `)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-    if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.auditLog.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { user: { select: { fullName: true } } },
+  });
 
-    return ok(
-      (data ?? []).map((r) => {
-        const uRaw = r.user as { full_name: string } | { full_name: string }[] | null;
-        const user = Array.isArray(uRaw) ? uRaw[0] : uRaw;
-        const actionLabel = ACTION_LABELS[r.action] ?? r.action;
-        const tableLabel = TABLE_LABELS[r.table_name] ?? r.table_name;
-        return {
-          id: r.id,
-          action: r.action,
-          tableName: r.table_name,
-          recordId: r.record_id ?? undefined,
-          userId: r.user_id ?? undefined,
-          userName: user?.full_name,
-          createdAt: r.created_at,
-          summary: `${user?.full_name ?? "Sistem"} bir ${tableLabel} ${actionLabel}`,
-        };
-      })
-    );
-  }
-);
+  return ok(
+    rows.map((r) => {
+      const actionLabel = ACTION_LABELS[r.action] ?? r.action;
+      const tableLabel = TABLE_LABELS[r.tableName] ?? r.tableName;
+      return {
+        id: r.id,
+        action: r.action,
+        tableName: r.tableName,
+        recordId: r.recordId ?? undefined,
+        userId: r.userId ?? undefined,
+        userName: r.user?.fullName,
+        createdAt: r.createdAt.toISOString(),
+        summary: `${r.user?.fullName ?? "Sistem"} bir ${tableLabel} ${actionLabel}`,
+      };
+    })
+  );
+});
 
 // ============================================
 // TEAM ROSTER + WAREHOUSE ACCESS
@@ -91,28 +95,29 @@ export interface TeamMember {
 }
 
 export const listTeamMembers = withAuth<void, TeamMember[]>(async (ctx) => {
-  if (ctx.demo) return ok([]);
-  // Profiles + auth.users (email is in auth schema, accessible via the
-  // foreign key relationship). We pull email from a join.
-  const { data, error } = await ctx.supabase
-    .from("profiles")
-    .select("id, full_name, role, is_active, warehouse_ids, last_login_at")
-    .eq("company_id", ctx.companyId)
-    .order("full_name");
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.user.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { fullName: "asc" },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      role: true,
+      isActive: true,
+      warehouseIds: true,
+      lastLoginAt: true,
+    },
+  });
 
-  // Bulk-fetch emails from auth.users via REST. Supabase exposes them through
-  // the user_id foreign key — but only if a custom RPC is set up. We fall
-  // back to "—" if not available.
   return ok(
-    (data ?? []).map((r) => ({
-      id: r.id,
-      fullName: r.full_name,
-      email: "—",
-      role: r.role as UserRole,
-      isActive: r.is_active,
-      warehouseIds: r.warehouse_ids ?? [],
-      lastLoginAt: r.last_login_at ?? undefined,
+    rows.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      email: u.email,
+      role: u.role,
+      isActive: u.isActive,
+      warehouseIds: u.warehouseIds ?? [],
+      lastLoginAt: u.lastLoginAt?.toISOString() ?? undefined,
     }))
   );
 });
@@ -124,27 +129,45 @@ const updateMemberSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-export const updateTeamMember = withRole<z.input<typeof updateMemberSchema>, void>(
-  ["admin"],
-  async (ctx, raw) => {
-    const data = parseInput(updateMemberSchema, raw);
-    if (ctx.demo) return ok();
+export const updateTeamMember = withRole<
+  z.input<typeof updateMemberSchema>,
+  void
+>(["admin"], async (ctx, raw) => {
+  const data = parseInput(updateMemberSchema, raw);
 
-    if (data.userId === ctx.userId && data.role && data.role !== "admin") {
-      return fail("self_demote", "Kendi rolünüzü admin'den düşüremezsiniz");
-    }
-
-    const update: Record<string, unknown> = {};
-    if (data.role) update.role = data.role;
-    if (data.warehouseIds) update.warehouse_ids = data.warehouseIds.length === 0 ? null : data.warehouseIds;
-    if (data.isActive !== undefined) update.is_active = data.isActive;
-
-    const { error } = await ctx.supabase.from("profiles").update(update).eq("id", data.userId);
-    if (error) throw ERR.database(error.message);
-    await logAudit(ctx, { action: "update", table: "profiles", recordId: data.userId, newData: update });
-    return ok();
+  if (data.userId === ctx.userId && data.role && data.role !== "admin") {
+    return fail("self_demote", "Kendi rolünüzü admin'den düşüremezsiniz");
   }
-);
+
+  // Verify the target user belongs to this company before updating.
+  const target = await ctx.prisma.user.findFirst({
+    where: { id: data.userId, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!target) throw ERR.notFound("Kullanıcı");
+
+  const update: {
+    role?: UserRole;
+    warehouseIds?: string[];
+    isActive?: boolean;
+  } = {};
+  if (data.role) update.role = data.role;
+  if (data.warehouseIds) update.warehouseIds = data.warehouseIds;
+  if (data.isActive !== undefined) update.isActive = data.isActive;
+
+  await ctx.prisma.user.update({
+    where: { id: data.userId },
+    data: update,
+  });
+
+  await logAudit(ctx, {
+    action: "update",
+    table: "users",
+    recordId: data.userId,
+    newData: update as Record<string, unknown>,
+  });
+  return ok();
+});
 
 // ============================================
 // PLAN LIMITS
@@ -160,37 +183,30 @@ export interface PlanLimits {
 }
 
 export const getPlanLimits = withAuth<void, PlanLimits>(async (ctx) => {
-  if (ctx.demo) {
-    return ok({
-      maxUsers: 3,
-      maxProducts: 100,
-      maxWarehouses: 2,
-      currentUsers: 1,
-      currentProducts: 18,
-      currentWarehouses: 1,
-    });
-  }
+  const company = await ctx.prisma.company.findUnique({
+    where: { id: ctx.companyId },
+    select: {
+      maxUsers: true,
+      subscriptionLimits: true,
+      subscriptionPlan: true,
+    },
+  });
 
-  const { data: company } = await ctx.supabase
-    .from("companies")
-    .select("max_users, subscription_limits, subscription_plan")
-    .eq("id", ctx.companyId)
-    .single();
-
-  const limits = (company?.subscription_limits as Partial<PlanLimits> | null) ?? {};
+  const limits =
+    (company?.subscriptionLimits as Partial<PlanLimits> | null) ?? {};
 
   const [users, products, warehouses] = await Promise.all([
-    ctx.supabase.from("profiles").select("id", { count: "exact", head: true }).eq("company_id", ctx.companyId),
-    ctx.supabase.from("products").select("id", { count: "exact", head: true }).eq("company_id", ctx.companyId),
-    ctx.supabase.from("warehouses").select("id", { count: "exact", head: true }).eq("company_id", ctx.companyId),
+    ctx.prisma.user.count({ where: { companyId: ctx.companyId } }),
+    ctx.prisma.product.count({ where: { companyId: ctx.companyId } }),
+    ctx.prisma.warehouse.count({ where: { companyId: ctx.companyId } }),
   ]);
 
   return ok({
-    maxUsers: limits.maxUsers ?? company?.max_users ?? null,
+    maxUsers: limits.maxUsers ?? company?.maxUsers ?? null,
     maxProducts: limits.maxProducts ?? null,
     maxWarehouses: limits.maxWarehouses ?? null,
-    currentUsers: users.count ?? 0,
-    currentProducts: products.count ?? 0,
-    currentWarehouses: warehouses.count ?? 0,
+    currentUsers: users,
+    currentProducts: products,
+    currentWarehouses: warehouses,
   });
 });

@@ -1,0 +1,1156 @@
+// StokTakip Pro — Prisma schema
+// Ported from supabase/migrations/*.sql
+// Conventions:
+//  - Tables stay snake_case in DB (@@map / @map)
+//  - PK uuid generation uses Postgres uuid_generate_v4()
+//  - Enum values are snake_case to match existing app code
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["views", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [uuidOssp(map: "uuid-ossp")]
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum SubscriptionPlan {
+  free
+  starter
+  professional
+  enterprise
+}
+
+enum UserRole {
+  admin
+  manager
+  warehouse_staff
+  viewer
+}
+
+enum MovementType {
+  in
+  out
+  transfer
+  adjustment
+  return
+}
+
+enum NotificationType {
+  low_stock
+  expiry_warning
+  expiry_expired
+  order_update
+  system
+}
+
+enum PurchaseOrderStatus {
+  draft
+  pending
+  approved
+  received
+  partial
+  cancelled
+}
+
+enum SalesOrderStatus {
+  draft
+  pending
+  approved
+  shipped
+  delivered
+  cancelled
+}
+
+enum FavoriteEntityType {
+  product
+  supplier
+  customer
+  warehouse
+}
+
+enum StockCountStatus {
+  open
+  in_progress
+  review
+  closed
+  cancelled
+}
+
+enum ReturnType {
+  customer
+  supplier
+}
+
+enum ReturnStatus {
+  pending
+  approved
+  received
+  rejected
+  cancelled
+}
+
+enum ReturnCondition {
+  resellable
+  damaged
+  scrap
+}
+
+enum PriceListScope {
+  all
+  customer
+  supplier
+  tag
+}
+
+enum OrderTemplateType {
+  purchase
+  sales
+}
+
+enum ScheduledReportType {
+  inventory
+  expiry
+  turnover
+  profit
+  sales_summary
+}
+
+enum ScheduledReportFrequency {
+  daily
+  weekly
+  monthly
+}
+
+enum CommentEntityType {
+  product
+  purchase_order
+  sales_order
+  count
+  return
+  task
+}
+
+enum TaskEntityType {
+  product
+  purchase_order
+  sales_order
+  count
+  return
+}
+
+enum TaskStatus {
+  open
+  in_progress
+  done
+  cancelled
+}
+
+enum TaskPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum IntegrationCategory {
+  marketplace
+  accounting
+  shipping
+  e_invoice
+  messaging
+}
+
+enum IntegrationStatus {
+  inactive
+  connecting
+  active
+  error
+}
+
+enum SyncJobStatus {
+  pending
+  running
+  done
+  failed
+}
+
+// ============================================
+// CORE MODELS
+// ============================================
+
+model Company {
+  id                      String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name                    String
+  slug                    String           @unique
+  taxId                   String?          @map("tax_id")
+  address                 String?
+  phone                   String?
+  email                   String?
+  logoUrl                 String?          @map("logo_url")
+  subscriptionPlan        SubscriptionPlan @default(free) @map("subscription_plan")
+  subscriptionExpiresAt   DateTime?        @map("subscription_expires_at") @db.Timestamptz()
+  maxUsers                Int              @default(3) @map("max_users")
+  settings                Json             @default("{}") @db.JsonB
+  subscriptionLimits      Json             @default("{}") @map("subscription_limits") @db.JsonB
+  isActive                Boolean          @default(true) @map("is_active")
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt               DateTime         @default(now()) @map("updated_at") @db.Timestamptz()
+
+  users                   User[]
+  categories              Category[]
+  products                Product[]
+  warehouses              Warehouse[]
+  inventory               Inventory[]
+  movements               StockMovement[]
+  suppliers               Supplier[]
+  customers               Customer[]
+  purchaseOrders          PurchaseOrder[]
+  salesOrders             SalesOrder[]
+  notifications           Notification[]
+  auditLogs               AuditLog[]
+  favorites               UserFavorite[]
+  stockCounts             StockCount[]
+  expiryRules             ExpiryRule[]
+  returns                 Return[]
+  priceLists              PriceList[]
+  orderTemplates          OrderTemplate[]
+  scheduledReports        ScheduledReport[]
+  comments                Comment[]
+  tasks                   Task[]
+  invitations             Invitation[]
+  apiKeys                 ApiKey[]
+  webhooks                Webhook[]
+  webhookDeliveries       WebhookDelivery[]
+  integrationConnections  IntegrationConnection[]
+  syncJobs                SyncJob[]
+
+  @@map("companies")
+}
+
+/// Replaces both Supabase auth.users and the previous "profiles" table.
+/// NextAuth Credentials provider stores passwordHash here.
+model User {
+  id            String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  email         String     @unique
+  emailVerified DateTime?  @map("email_verified") @db.Timestamptz()
+  passwordHash  String?    @map("password_hash")
+  fullName      String     @map("full_name")
+  role          UserRole   @default(viewer)
+  avatarUrl     String?    @map("avatar_url")
+  phone         String?
+  isActive      Boolean    @default(true) @map("is_active")
+  lastLoginAt   DateTime?  @map("last_login_at") @db.Timestamptz()
+  preferences   Json       @default("{}") @db.JsonB
+  warehouseIds  String[]   @map("warehouse_ids") @db.Uuid
+  companyId     String     @map("company_id") @db.Uuid
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime   @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company       Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  managedWarehouses        Warehouse[]            @relation("WarehouseManager")
+  movements                StockMovement[]
+  purchaseOrders           PurchaseOrder[]
+  salesOrders              SalesOrder[]
+  pickedSalesOrders        SalesOrder[]           @relation("SalesOrderPicker")
+  notifications            Notification[]
+  auditLogs                AuditLog[]
+  favorites                UserFavorite[]
+  stockCountsStarted       StockCount[]           @relation("StockCountStarter")
+  stockCountsClosed        StockCount[]           @relation("StockCountCloser")
+  stockCountItemsScanned   StockCountItem[]
+  returnsCreated           Return[]               @relation("ReturnCreator")
+  returnsApproved          Return[]               @relation("ReturnApprover")
+  orderTemplates           OrderTemplate[]
+  scheduledReports         ScheduledReport[]
+  comments                 Comment[]
+  tasksCreated             Task[]                 @relation("TaskCreator")
+  tasksAssigned            Task[]                 @relation("TaskAssignee")
+  invitationsSent          Invitation[]           @relation("InvitationInviter")
+  invitationsAccepted      Invitation[]           @relation("InvitationAcceptor")
+  apiKeys                  ApiKey[]
+  webhooks                 Webhook[]
+  integrationConnections   IntegrationConnection[]
+
+  @@index([companyId])
+  @@map("users")
+}
+
+model Category {
+  id        String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId String     @map("company_id") @db.Uuid
+  name      String
+  parentId  String?    @map("parent_id") @db.Uuid
+  color     String?
+  icon      String?
+  sortOrder Int        @default(0) @map("sort_order")
+  isActive  Boolean    @default(true) @map("is_active")
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime   @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  parent     Category?  @relation("CategoryParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children   Category[] @relation("CategoryParent")
+  products   Product[]
+  expiryRules ExpiryRule[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("categories")
+}
+
+model Product {
+  id                 String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId          String     @map("company_id") @db.Uuid
+  categoryId         String?    @map("category_id") @db.Uuid
+  name               String
+  sku                String
+  barcode            String?
+  description        String?
+  unit               String     @default("adet")
+  minStock           Decimal    @default(0) @map("min_stock") @db.Decimal(12, 2)
+  maxStock           Decimal    @default(0) @map("max_stock") @db.Decimal(12, 2)
+  purchasePrice      Decimal    @default(0) @map("purchase_price") @db.Decimal(12, 2)
+  salePrice          Decimal    @default(0) @map("sale_price") @db.Decimal(12, 2)
+  taxRate            Decimal    @default(18.00) @map("tax_rate") @db.Decimal(5, 2)
+  weight             Decimal?   @db.Decimal(10, 3)
+  dimensions         String?
+  imageUrl           String?    @map("image_url")
+  isPerishable       Boolean    @default(false) @map("is_perishable")
+  defaultExpiryDays  Int?       @map("default_expiry_days")
+  isActive           Boolean    @default(true) @map("is_active")
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt          DateTime   @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category           Category?           @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  inventory          Inventory[]
+  movements          StockMovement[]
+  purchaseOrderItems PurchaseOrderItem[]
+  salesOrderItems    SalesOrderItem[]
+  stockCountItems    StockCountItem[]
+  returnItems        ReturnItem[]
+  priceListItems    PriceListItem[]
+
+  @@unique([companyId, sku])
+  @@index([companyId])
+  @@index([categoryId])
+  @@index([barcode])
+  @@index([companyId, sku])
+  @@map("products")
+}
+
+model Warehouse {
+  id        String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId String              @map("company_id") @db.Uuid
+  name      String
+  address   String?
+  managerId String?             @map("manager_id") @db.Uuid
+  phone     String?
+  email     String?
+  isActive  Boolean             @default(true) @map("is_active")
+  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime            @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  manager   User?               @relation("WarehouseManager", fields: [managerId], references: [id], onDelete: SetNull)
+  locations WarehouseLocation[]
+  inventory Inventory[]
+  movementsFrom    StockMovement[] @relation("MovementFromWarehouse")
+  movementsTo      StockMovement[] @relation("MovementToWarehouse")
+  purchaseOrders   PurchaseOrder[]
+  salesOrders      SalesOrder[]
+  stockCounts      StockCount[]
+  returns          Return[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("warehouses")
+}
+
+model WarehouseLocation {
+  id          String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  warehouseId String      @map("warehouse_id") @db.Uuid
+  name        String
+  description String?
+  sortOrder   Int         @default(0) @map("sort_order")
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+
+  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  inventory   Inventory[]
+
+  @@unique([warehouseId, name])
+  @@index([warehouseId])
+  @@map("warehouse_locations")
+}
+
+model Inventory {
+  id               String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId        String             @map("company_id") @db.Uuid
+  productId        String             @map("product_id") @db.Uuid
+  warehouseId      String             @map("warehouse_id") @db.Uuid
+  locationId       String?            @map("location_id") @db.Uuid
+  lotNumber        String?            @map("lot_number")
+  expiryDate       DateTime?          @map("expiry_date") @db.Date
+  quantity         Decimal            @default(0) @db.Decimal(12, 2)
+  reservedQuantity Decimal            @default(0) @map("reserved_quantity") @db.Decimal(12, 2)
+  unitCost         Decimal            @default(0) @map("unit_cost") @db.Decimal(12, 2)
+  receivedAt       DateTime           @default(now()) @map("received_at") @db.Timestamptz()
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime           @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product          Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse        Warehouse          @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  location         WarehouseLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  expiryRuleFires  ExpiryRuleFire[]
+
+  @@index([companyId])
+  @@index([productId])
+  @@index([warehouseId])
+  @@map("inventory")
+}
+
+model StockMovement {
+  id              String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId       String       @map("company_id") @db.Uuid
+  productId       String       @map("product_id") @db.Uuid
+  movementType    MovementType @map("movement_type")
+  quantity        Decimal      @db.Decimal(12, 2)
+  fromWarehouseId String?      @map("from_warehouse_id") @db.Uuid
+  toWarehouseId   String?      @map("to_warehouse_id") @db.Uuid
+  lotNumber       String?      @map("lot_number")
+  expiryDate      DateTime?    @map("expiry_date") @db.Date
+  unitCost        Decimal?     @map("unit_cost") @db.Decimal(12, 2)
+  reason          String?
+  referenceNumber String?      @map("reference_number")
+  referenceType   String?      @map("reference_type")
+  notes           String?
+  userId          String       @map("user_id") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+
+  company         Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product         Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  fromWarehouse   Warehouse?   @relation("MovementFromWarehouse", fields: [fromWarehouseId], references: [id], onDelete: SetNull)
+  toWarehouse     Warehouse?   @relation("MovementToWarehouse", fields: [toWarehouseId], references: [id], onDelete: SetNull)
+  user            User         @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([productId])
+  @@index([movementType])
+  @@index([createdAt])
+  @@index([fromWarehouseId])
+  @@index([companyId, createdAt])
+  @@map("stock_movements")
+}
+
+model Supplier {
+  id             String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId      String          @map("company_id") @db.Uuid
+  name           String
+  contactPerson  String?         @map("contact_person")
+  email          String?
+  phone          String?
+  address        String?
+  taxId          String?         @map("tax_id")
+  notes          String?
+  isActive       Boolean         @default(true) @map("is_active")
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime        @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  purchaseOrders PurchaseOrder[]
+  returns        Return[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("suppliers")
+}
+
+model Customer {
+  id            String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId     String       @map("company_id") @db.Uuid
+  name          String
+  contactPerson String?      @map("contact_person")
+  email         String?
+  phone         String?
+  address       String?
+  taxId         String?      @map("tax_id")
+  notes         String?
+  isActive      Boolean      @default(true) @map("is_active")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  salesOrders   SalesOrder[]
+  returns       Return[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("customers")
+}
+
+model PurchaseOrder {
+  id           String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String              @map("company_id") @db.Uuid
+  supplierId   String              @map("supplier_id") @db.Uuid
+  warehouseId  String              @map("warehouse_id") @db.Uuid
+  orderNumber  String              @map("order_number")
+  status       PurchaseOrderStatus @default(draft)
+  orderDate    DateTime            @default(dbgenerated("CURRENT_DATE")) @map("order_date") @db.Date
+  expectedDate DateTime?           @map("expected_date") @db.Date
+  receivedDate DateTime?           @map("received_date") @db.Date
+  subtotal     Decimal             @default(0) @db.Decimal(12, 2)
+  taxAmount    Decimal             @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal             @default(0) @map("total_amount") @db.Decimal(12, 2)
+  currency     String              @default("TRY")
+  exchangeRate Decimal             @default(1) @map("exchange_rate") @db.Decimal(12, 6)
+  notes        String?
+  userId       String              @map("user_id") @db.Uuid
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime            @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier  Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  warehouse Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user      User                @relation(fields: [userId], references: [id])
+  items     PurchaseOrderItem[]
+
+  @@unique([companyId, orderNumber])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id               String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  orderId          String        @map("order_id") @db.Uuid
+  productId        String        @map("product_id") @db.Uuid
+  quantity         Decimal       @db.Decimal(12, 2)
+  receivedQuantity Decimal       @default(0) @map("received_quantity") @db.Decimal(12, 2)
+  unitPrice        Decimal       @map("unit_price") @db.Decimal(12, 2)
+  taxRate          Decimal       @default(18.00) @map("tax_rate") @db.Decimal(5, 2)
+  lotNumber        String?       @map("lot_number")
+  expiryDate       DateTime?     @map("expiry_date") @db.Date
+  total            Decimal       @default(0) @db.Decimal(12, 2)
+
+  order            PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product          Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("purchase_order_items")
+}
+
+model SalesOrder {
+  id           String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String           @map("company_id") @db.Uuid
+  customerId   String           @map("customer_id") @db.Uuid
+  warehouseId  String           @map("warehouse_id") @db.Uuid
+  orderNumber  String           @map("order_number")
+  status       SalesOrderStatus @default(draft)
+  orderDate    DateTime         @default(dbgenerated("CURRENT_DATE")) @map("order_date") @db.Date
+  shipDate     DateTime?        @map("ship_date") @db.Date
+  deliveryDate DateTime?        @map("delivery_date") @db.Date
+  subtotal     Decimal          @default(0) @db.Decimal(12, 2)
+  taxAmount    Decimal          @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal          @default(0) @map("total_amount") @db.Decimal(12, 2)
+  currency     String           @default("TRY")
+  exchangeRate Decimal          @default(1) @map("exchange_rate") @db.Decimal(12, 6)
+  notes        String?
+  userId       String           @map("user_id") @db.Uuid
+  pickedAt     DateTime?        @map("picked_at") @db.Timestamptz()
+  pickedById   String?          @map("picked_by") @db.Uuid
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime         @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer  Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  warehouse Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user      User             @relation(fields: [userId], references: [id])
+  picker    User?            @relation("SalesOrderPicker", fields: [pickedById], references: [id], onDelete: SetNull)
+  items     SalesOrderItem[]
+
+  @@unique([companyId, orderNumber])
+  @@map("sales_orders")
+}
+
+model SalesOrderItem {
+  id              String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  orderId         String     @map("order_id") @db.Uuid
+  productId       String     @map("product_id") @db.Uuid
+  quantity        Decimal    @db.Decimal(12, 2)
+  shippedQuantity Decimal    @default(0) @map("shipped_quantity") @db.Decimal(12, 2)
+  pickedQty       Decimal    @default(0) @map("picked_qty") @db.Decimal(12, 2)
+  unitPrice       Decimal    @map("unit_price") @db.Decimal(12, 2)
+  taxRate         Decimal    @default(18.00) @map("tax_rate") @db.Decimal(5, 2)
+  lotNumber       String?    @map("lot_number")
+  total           Decimal    @default(0) @db.Decimal(12, 2)
+
+  order           SalesOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product         Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("sales_order_items")
+}
+
+model Notification {
+  id        String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId String           @map("company_id") @db.Uuid
+  userId    String?          @map("user_id") @db.Uuid
+  type      NotificationType
+  title     String
+  message   String
+  metadata  Json             @default("{}") @db.JsonB
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([companyId])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id        String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId String   @map("company_id") @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  tableName String   @map("table_name")
+  recordId  String?  @map("record_id") @db.Uuid
+  oldData   Json?    @map("old_data") @db.JsonB
+  newData   Json?    @map("new_data") @db.JsonB
+  ipAddress String?  @map("ip_address") @db.Inet
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([createdAt])
+  @@index([tableName, recordId, createdAt(sort: Desc)])
+  @@map("audit_log")
+}
+
+model UserFavorite {
+  userId     String             @map("user_id") @db.Uuid
+  entityType FavoriteEntityType @map("entity_type")
+  entityId   String             @map("entity_id") @db.Uuid
+  companyId  String             @map("company_id") @db.Uuid
+  createdAt  DateTime           @default(now()) @map("created_at") @db.Timestamptz()
+
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company    Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, entityType, entityId])
+  @@index([userId])
+  @@index([companyId])
+  @@map("user_favorites")
+}
+
+model StockCount {
+  id          String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String           @map("company_id") @db.Uuid
+  warehouseId String           @map("warehouse_id") @db.Uuid
+  name        String?
+  scope       Json             @default("{}") @db.JsonB
+  status      StockCountStatus @default(open)
+  startedById String           @map("started_by") @db.Uuid
+  startedAt   DateTime         @default(now()) @map("started_at") @db.Timestamptz()
+  closedAt    DateTime?        @map("closed_at") @db.Timestamptz()
+  closedById  String?          @map("closed_by") @db.Uuid
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime         @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  startedBy   User             @relation("StockCountStarter", fields: [startedById], references: [id])
+  closedBy    User?            @relation("StockCountCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  items       StockCountItem[]
+
+  @@index([companyId])
+  @@index([warehouseId])
+  @@map("stock_counts")
+}
+
+model StockCountItem {
+  id          String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  countId     String     @map("count_id") @db.Uuid
+  productId   String     @map("product_id") @db.Uuid
+  lotNumber   String?    @map("lot_number")
+  expectedQty Decimal    @default(0) @map("expected_qty") @db.Decimal(12, 2)
+  countedQty  Decimal?   @map("counted_qty") @db.Decimal(12, 2)
+  /// Generated column: COALESCE(counted_qty, 0) - expected_qty (set up in raw SQL).
+  /// Marked read-only via @default(dbgenerated()) so Prisma never writes to it.
+  variance    Decimal?   @default(dbgenerated("(COALESCE(counted_qty, 0) - expected_qty)")) @db.Decimal(12, 2)
+  scannedById String?    @map("scanned_by") @db.Uuid
+  scannedAt   DateTime?  @map("scanned_at") @db.Timestamptz()
+  notes       String?
+
+  count       StockCount @relation(fields: [countId], references: [id], onDelete: Cascade)
+  product     Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  scannedBy   User?      @relation(fields: [scannedById], references: [id], onDelete: SetNull)
+
+  @@index([countId])
+  @@index([productId])
+  @@map("stock_count_items")
+}
+
+model ExpiryRule {
+  id           String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String           @map("company_id") @db.Uuid
+  name         String
+  triggerDays  Int              @map("trigger_days")
+  categoryId   String?          @map("category_id") @db.Uuid
+  channels     String[]         @default(["in_app"])
+  recipients   String[]         @default([]) @db.Uuid
+  isActive     Boolean          @default(true) @map("is_active")
+  lastRunAt    DateTime?        @map("last_run_at") @db.Timestamptz()
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime         @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category     Category?        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  fires        ExpiryRuleFire[]
+
+  @@index([companyId])
+  @@map("expiry_rules")
+}
+
+model ExpiryRuleFire {
+  ruleId      String     @map("rule_id") @db.Uuid
+  inventoryId String     @map("inventory_id") @db.Uuid
+  firedAt     DateTime   @default(now()) @map("fired_at") @db.Timestamptz()
+
+  rule        ExpiryRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  inventory   Inventory  @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@id([ruleId, inventoryId])
+  @@map("expiry_rule_fires")
+}
+
+model Return {
+  id              String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId       String       @map("company_id") @db.Uuid
+  type            ReturnType
+  relatedOrderId  String?      @map("related_order_id") @db.Uuid
+  customerId      String?      @map("customer_id") @db.Uuid
+  supplierId      String?      @map("supplier_id") @db.Uuid
+  warehouseId     String       @map("warehouse_id") @db.Uuid
+  reason          String?
+  status          ReturnStatus @default(pending)
+  notes           String?
+  createdById     String       @map("created_by") @db.Uuid
+  approvedById    String?      @map("approved_by") @db.Uuid
+  approvedAt      DateTime?    @map("approved_at") @db.Timestamptz()
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier    Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  warehouse   Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  createdBy   User         @relation("ReturnCreator", fields: [createdById], references: [id])
+  approvedBy  User?        @relation("ReturnApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  items       ReturnItem[]
+
+  @@index([companyId])
+  @@map("returns")
+}
+
+model ReturnItem {
+  id         String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  returnId   String          @map("return_id") @db.Uuid
+  productId  String          @map("product_id") @db.Uuid
+  lotNumber  String?         @map("lot_number")
+  quantity   Decimal         @db.Decimal(12, 2)
+  condition  ReturnCondition @default(resellable)
+  unitValue  Decimal?        @map("unit_value") @db.Decimal(12, 2)
+
+  return     Return          @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([returnId])
+  @@map("return_items")
+}
+
+model PriceList {
+  id          String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String          @map("company_id") @db.Uuid
+  name        String
+  currency    String          @default("TRY")
+  appliesTo   PriceListScope  @default(all) @map("applies_to")
+  appliesToId String?         @map("applies_to_id") @db.Uuid
+  validFrom   DateTime?       @map("valid_from") @db.Date
+  validTo     DateTime?       @map("valid_to") @db.Date
+  isActive    Boolean         @default(true) @map("is_active")
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime        @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  items       PriceListItem[]
+
+  @@index([companyId])
+  @@index([appliesTo, appliesToId])
+  @@map("price_lists")
+}
+
+model PriceListItem {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  priceListId String    @map("price_list_id") @db.Uuid
+  productId   String    @map("product_id") @db.Uuid
+  price       Decimal   @db.Decimal(12, 2)
+  minQty      Decimal   @default(1) @map("min_qty") @db.Decimal(12, 2)
+
+  priceList   PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([priceListId, productId, minQty])
+  @@index([priceListId])
+  @@index([productId])
+  @@map("price_list_items")
+}
+
+model OrderTemplate {
+  id          String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String            @map("company_id") @db.Uuid
+  name        String
+  type        OrderTemplateType
+  partnerId   String?           @map("partner_id") @db.Uuid
+  items       Json              @default("[]") @db.JsonB
+  notes       String?
+  createdById String            @map("created_by") @db.Uuid
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime          @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy   User              @relation(fields: [createdById], references: [id])
+
+  @@index([companyId])
+  @@index([type])
+  @@map("order_templates")
+}
+
+model ScheduledReport {
+  id          String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String                   @map("company_id") @db.Uuid
+  name        String
+  reportType  ScheduledReportType      @map("report_type")
+  params      Json                     @default("{}") @db.JsonB
+  frequency   ScheduledReportFrequency @default(weekly)
+  dayOfPeriod Int?                     @map("day_of_period")
+  hourOfDay   Int                      @default(8) @map("hour_of_day")
+  recipients  String[]                 @default([])
+  isActive    Boolean                  @default(true) @map("is_active")
+  lastRunAt   DateTime?                @map("last_run_at") @db.Timestamptz()
+  nextRunAt   DateTime?                @map("next_run_at") @db.Timestamptz()
+  createdById String                   @map("created_by") @db.Uuid
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime                 @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy   User                     @relation(fields: [createdById], references: [id])
+
+  @@index([companyId])
+  @@map("scheduled_reports")
+}
+
+model Comment {
+  id         String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId  String            @map("company_id") @db.Uuid
+  entityType CommentEntityType @map("entity_type")
+  entityId   String            @map("entity_id") @db.Uuid
+  userId     String            @map("user_id") @db.Uuid
+  body       String
+  mentions   String[]          @default([]) @db.Uuid
+  editedAt   DateTime?         @map("edited_at") @db.Timestamptz()
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+
+  company    Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([entityType, entityId])
+  @@index([companyId])
+  @@map("comments")
+}
+
+model Task {
+  id           String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String          @map("company_id") @db.Uuid
+  title        String
+  description  String?
+  entityType   TaskEntityType? @map("entity_type")
+  entityId     String?         @map("entity_id") @db.Uuid
+  status       TaskStatus      @default(open)
+  priority     TaskPriority    @default(normal)
+  assignedToId String?         @map("assigned_to") @db.Uuid
+  dueAt        DateTime?       @map("due_at") @db.Date
+  createdById  String          @map("created_by") @db.Uuid
+  completedAt  DateTime?       @map("completed_at") @db.Timestamptz()
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime        @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy    User            @relation("TaskCreator", fields: [createdById], references: [id])
+  assignedTo   User?           @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@map("tasks")
+}
+
+model Invitation {
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String    @map("company_id") @db.Uuid
+  email        String
+  role         UserRole
+  warehouseIds String[]  @map("warehouse_ids") @db.Uuid
+  token        String    @unique
+  invitedById  String    @map("invited_by") @db.Uuid
+  expiresAt    DateTime  @default(dbgenerated("(now() + interval '7 days')")) @map("expires_at") @db.Timestamptz()
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz()
+  acceptedById String?   @map("accepted_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invitedBy    User      @relation("InvitationInviter", fields: [invitedById], references: [id])
+  acceptedBy   User?     @relation("InvitationAcceptor", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, email])
+  @@index([token])
+  @@index([companyId])
+  @@map("invitations")
+}
+
+model ApiKey {
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId    String    @map("company_id") @db.Uuid
+  name         String
+  prefix       String
+  hashedToken  String    @unique @map("hashed_token")
+  scopes       String[]  @default(["read"])
+  createdById  String    @map("created_by") @db.Uuid
+  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz()
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz()
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz()
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy    User      @relation(fields: [createdById], references: [id])
+
+  @@index([companyId])
+  @@map("api_keys")
+}
+
+model Webhook {
+  id          String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String            @map("company_id") @db.Uuid
+  name        String
+  url         String
+  secret      String
+  events      String[]
+  isActive    Boolean           @default(true) @map("is_active")
+  createdById String            @map("created_by") @db.Uuid
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime          @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy   User              @relation(fields: [createdById], references: [id])
+  deliveries  WebhookDelivery[]
+
+  @@index([companyId])
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  webhookId    String   @map("webhook_id") @db.Uuid
+  companyId    String   @map("company_id") @db.Uuid
+  event        String
+  payload      Json     @db.JsonB
+  statusCode   Int?     @map("status_code")
+  responseBody String?  @map("response_body")
+  durationMs   Int?     @map("duration_ms")
+  attempt      Int      @default(1)
+  success      Boolean  @default(false)
+  error        String?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  webhook      Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId, createdAt(sort: Desc)])
+  @@map("webhook_deliveries")
+}
+
+model IntegrationConnection {
+  id          String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId   String              @map("company_id") @db.Uuid
+  category    IntegrationCategory
+  provider    String
+  name        String
+  status      IntegrationStatus   @default(inactive)
+  config      Json                @default("{}") @db.JsonB
+  lastSyncAt  DateTime?           @map("last_sync_at") @db.Timestamptz()
+  lastError   String?             @map("last_error")
+  createdById String              @map("created_by") @db.Uuid
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime            @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy   User                @relation(fields: [createdById], references: [id])
+  syncJobs    SyncJob[]
+
+  @@unique([companyId, provider, name])
+  @@index([companyId])
+  @@index([companyId, category])
+  @@map("integration_connections")
+}
+
+model SyncJob {
+  id            String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId     String                 @map("company_id") @db.Uuid
+  connectionId  String?                @map("connection_id") @db.Uuid
+  kind          String
+  status        SyncJobStatus          @default(pending)
+  payload       Json                   @default("{}") @db.JsonB
+  result        Json?                  @db.JsonB
+  attempts      Int                    @default(0)
+  lastError     String?                @map("last_error")
+  scheduledFor  DateTime               @default(now()) @map("scheduled_for") @db.Timestamptz()
+  startedAt     DateTime?              @map("started_at") @db.Timestamptz()
+  completedAt   DateTime?              @map("completed_at") @db.Timestamptz()
+  createdAt     DateTime               @default(now()) @map("created_at") @db.Timestamptz()
+
+  company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connection    IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt(sort: Desc)])
+  @@map("sync_jobs")
+}
+
+// ============================================
+// VIEWS (preview feature)
+// Defined as read-only models pointing to existing Postgres views.
+// Actual view DDL lives in prisma/sql/views.sql, applied by the migration.
+// ============================================
+
+view ProductStockSummary {
+  productId      String   @map("product_id") @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  name           String
+  sku            String
+  barcode        String?
+  categoryId     String?  @map("category_id") @db.Uuid
+  categoryName   String?  @map("category_name")
+  unit           String
+  minStock       Decimal  @map("min_stock") @db.Decimal(12, 2)
+  maxStock       Decimal  @map("max_stock") @db.Decimal(12, 2)
+  purchasePrice  Decimal  @map("purchase_price") @db.Decimal(12, 2)
+  salePrice      Decimal  @map("sale_price") @db.Decimal(12, 2)
+  isActive       Boolean  @map("is_active")
+  currentStock   Decimal  @map("current_stock") @db.Decimal
+  reservedStock  Decimal  @map("reserved_stock") @db.Decimal
+  stockStatus    String   @map("stock_status")
+  createdAt      DateTime @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime @map("updated_at") @db.Timestamptz()
+
+  @@unique([productId])
+  @@map("product_stock_summary")
+}
+
+view ExpiringLot {
+  id            String   @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  productName   String   @map("product_name")
+  productSku    String   @map("product_sku")
+  lotNumber     String?  @map("lot_number")
+  quantity      Decimal  @db.Decimal(12, 2)
+  expiryDate    DateTime @map("expiry_date") @db.Date
+  warehouseId   String   @map("warehouse_id") @db.Uuid
+  warehouseName String   @map("warehouse_name")
+  receivedAt    DateTime @map("received_at") @db.Timestamptz()
+  daysLeft      Int      @map("days_left")
+
+  @@unique([id])
+  @@map("expiring_lots")
+}
+
+view LocationInventory {
+  locationId           String    @map("location_id") @db.Uuid
+  warehouseId          String    @map("warehouse_id") @db.Uuid
+  locationName         String    @map("location_name")
+  locationDescription  String?   @map("location_description")
+  productId            String?   @map("product_id") @db.Uuid
+  productName          String?   @map("product_name")
+  productSku           String?   @map("product_sku")
+  productBarcode       String?   @map("product_barcode")
+  productUnit          String?   @map("product_unit")
+  lotNumber            String?   @map("lot_number")
+  expiryDate           DateTime? @map("expiry_date") @db.Date
+  quantity             Decimal?  @db.Decimal
+
+  @@unique([locationId, productId, lotNumber])
+  @@map("v_location_inventory")
+}
+
+view ReorderSuggestion {
+  productId           String   @map("product_id") @db.Uuid
+  companyId           String   @map("company_id") @db.Uuid
+  name                String
+  sku                 String
+  unit                String
+  minStock            Decimal  @map("min_stock") @db.Decimal(12, 2)
+  maxStock            Decimal  @map("max_stock") @db.Decimal(12, 2)
+  currentStock        Decimal  @map("current_stock") @db.Decimal
+  shortage            Decimal  @db.Decimal
+  suggestedQty        Decimal  @map("suggested_qty") @db.Decimal
+  preferredSupplierId String?  @map("preferred_supplier_id") @db.Uuid
+  lastPurchasePrice   Decimal  @map("last_purchase_price") @db.Decimal(12, 2)
+
+  @@unique([productId])
+  @@map("v_reorder_suggestions")
+}
+
+view InventoryTurnover {
+  productId    String    @map("product_id") @db.Uuid
+  companyId    String    @map("company_id") @db.Uuid
+  name         String
+  sku          String
+  unit         String
+  categoryName String?   @map("category_name")
+  currentStock Decimal   @map("current_stock") @db.Decimal
+  avgStock     Decimal   @map("avg_stock") @db.Decimal
+  out30d       Decimal   @map("out_30d") @db.Decimal
+  out60d       Decimal   @map("out_60d") @db.Decimal
+  out90d       Decimal   @map("out_90d") @db.Decimal
+  turnover30d  Decimal   @map("turnover_30d") @db.Decimal
+  turnover90d  Decimal   @map("turnover_90d") @db.Decimal
+  lastOutAt    DateTime? @map("last_out_at") @db.Timestamptz()
+
+  @@unique([productId])
+  @@map("v_inventory_turnover")
+}
+
+view DeadStock {
+  productId      String    @map("product_id") @db.Uuid
+  companyId      String    @map("company_id") @db.Uuid
+  name           String
+  sku            String
+  unit           String
+  salePrice      Decimal   @map("sale_price") @db.Decimal(12, 2)
+  purchasePrice  Decimal   @map("purchase_price") @db.Decimal(12, 2)
+  currentStock   Decimal   @map("current_stock") @db.Decimal
+  stockValue     Decimal   @map("stock_value") @db.Decimal
+  lastOutAt      DateTime? @map("last_out_at") @db.Timestamptz()
+  daysIdle       Int       @map("days_idle")
+
+  @@unique([productId])
+  @@map("v_dead_stock")
+}

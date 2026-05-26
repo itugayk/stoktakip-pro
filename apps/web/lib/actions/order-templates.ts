@@ -35,65 +35,72 @@ export const listOrderTemplates = withAuth<
   { type?: OrderTemplateType } | undefined,
   OrderTemplate[]
 >(async (ctx, filter) => {
-  if (ctx.demo) return ok([]);
-
-  let q = ctx.supabase
-    .from("order_templates")
-    .select("*")
-    .order("name");
-  if (filter?.type) q = q.eq("type", filter.type);
-
-  const { data, error } = await q;
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.orderTemplate.findMany({
+    where: {
+      companyId: ctx.companyId,
+      ...(filter?.type ? { type: filter.type } : {}),
+    },
+    orderBy: { name: "asc" },
+  });
 
   return ok(
-    (data ?? []).map((r) => ({
+    rows.map((r) => ({
       id: r.id,
       name: r.name,
       type: r.type as OrderTemplateType,
-      partnerId: r.partner_id ?? undefined,
-      items: (r.items as { productId: string; quantity: number; unitPrice: number }[]) ?? [],
+      partnerId: r.partnerId ?? undefined,
+      items:
+        (r.items as { productId: string; quantity: number; unitPrice: number }[]) ??
+        [],
       notes: r.notes ?? undefined,
-      createdAt: r.created_at,
+      createdAt: r.createdAt.toISOString(),
     }))
   );
 });
 
-export const upsertOrderTemplate = withCompany<z.input<typeof upsertSchema>, { id: string }>(
-  async (ctx, raw) => {
-    const data = parseInput(upsertSchema, raw);
-    if (ctx.demo) return ok({ id: data.id ?? `tpl-${Date.now()}` });
+export const upsertOrderTemplate = withCompany<
+  z.input<typeof upsertSchema>,
+  { id: string }
+>(async (ctx, raw) => {
+  const data = parseInput(upsertSchema, raw);
 
-    const payload = {
-      name: data.name,
-      type: data.type,
-      partner_id: data.partnerId ?? null,
-      items: data.items,
-      notes: data.notes ?? null,
-    };
+  const payload = {
+    name: data.name,
+    type: data.type,
+    partnerId: data.partnerId ?? null,
+    items: data.items,
+    notes: data.notes ?? null,
+  };
 
-    if (data.id) {
-      const { error } = await ctx.supabase
-        .from("order_templates")
-        .update(payload)
-        .eq("id", data.id);
-      if (error) throw ERR.database(error.message);
-      return ok({ id: data.id });
-    }
+  if (data.id) {
+    const exists = await ctx.prisma.orderTemplate.findFirst({
+      where: { id: data.id, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!exists) throw ERR.notFound("Şablon");
 
-    const { data: row, error } = await ctx.supabase
-      .from("order_templates")
-      .insert({ ...payload, company_id: ctx.companyId, created_by: ctx.userId } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    return ok({ id: row.id });
+    await ctx.prisma.orderTemplate.update({
+      where: { id: data.id },
+      data: payload,
+    });
+    return ok({ id: data.id });
   }
-);
+
+  const row = await ctx.prisma.orderTemplate.create({
+    data: {
+      ...payload,
+      companyId: ctx.companyId,
+      createdById: ctx.userId,
+    },
+    select: { id: true },
+  });
+  return ok({ id: row.id });
+});
 
 export const deleteOrderTemplate = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("order_templates").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.orderTemplate.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Şablon");
   return ok();
 });

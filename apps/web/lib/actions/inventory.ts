@@ -1,6 +1,6 @@
 "use server";
 
-import { demoMovements, demoLots, demoProducts } from "@/lib/demo-data";
+import type { Prisma } from "@prisma/client";
 import type { StockMovement, MovementType } from "@/lib/types";
 import {
   toStockMovement,
@@ -26,47 +26,40 @@ export const getStockMovements = withAuth<
   { search?: string; type?: string; warehouseId?: string; limit?: number } | undefined,
   StockMovement[]
 >(async (ctx, filters) => {
-  if (ctx.demo) {
-    let results = [...demoMovements];
-    if (filters?.search) {
-      const q = filters.search.toLowerCase();
-      results = results.filter(
-        (m) => m.productName.toLowerCase().includes(q) || m.productSku.toLowerCase().includes(q)
-      );
-    }
-    if (filters?.type && filters.type !== "all") {
-      results = results.filter((m) => m.type === filters.type);
-    }
-    if (filters?.limit) results = results.slice(0, filters.limit);
-    return ok(
-      results.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      )
-    );
-  }
-
-  let query = ctx.supabase
-    .from("stock_movements")
-    .select(`
-      *,
-      product:products(name, sku),
-      from_warehouse:warehouses!stock_movements_from_warehouse_id_fkey(name),
-      to_warehouse:warehouses!stock_movements_to_warehouse_id_fkey(name),
-      user:profiles!stock_movements_user_id_fkey(full_name)
-    `)
-    .order("created_at", { ascending: false });
-
+  const where: Prisma.StockMovementWhereInput = {
+    companyId: ctx.companyId,
+  };
   if (filters?.type && filters.type !== "all") {
-    query = query.eq("movement_type", filters.type);
+    where.movementType = filters.type as MovementType;
   }
-  if (filters?.limit) query = query.limit(filters.limit);
+  if (filters?.warehouseId) {
+    where.OR = [
+      { fromWarehouseId: filters.warehouseId },
+      { toWarehouseId: filters.warehouseId },
+    ];
+  }
+  if (filters?.search) {
+    where.product = {
+      OR: [
+        { name: { contains: filters.search, mode: "insensitive" } },
+        { sku: { contains: filters.search, mode: "insensitive" } },
+      ],
+    };
+  }
 
-  const { data, error } = await query;
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.stockMovement.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    take: filters?.limit ?? undefined,
+    include: {
+      product: { select: { name: true, sku: true } },
+      fromWarehouse: { select: { name: true } },
+      toWarehouse: { select: { name: true } },
+      user: { select: { fullName: true } },
+    },
+  });
 
-  return ok(
-    (data ?? []).map((row) => toStockMovement(row as unknown as MovementJoinedRow))
-  );
+  return ok(rows.map((row) => toStockMovement(row as MovementJoinedRow)));
 });
 
 // ============================================
@@ -89,11 +82,18 @@ export const createStockMovement = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(movementInputSchema, raw);
-  if (ctx.demo) return ok();
+
+  // Verify the product belongs to the current company before doing anything.
+  const product = await ctx.prisma.product.findFirst({
+    where: { id: data.productId, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!product) throw ERR.notFound("Ürün");
 
   const fromWarehouseId =
     data.type === "out" || data.type === "transfer" ? data.warehouseId : undefined;
-  const toWarehouseId = data.type === "in" ? data.warehouseId : data.toWarehouseId;
+  const toWarehouseId =
+    data.type === "in" ? data.warehouseId : data.toWarehouseId;
 
   const moveInsert = fromStockMovement({
     companyId: ctx.companyId,
@@ -108,28 +108,24 @@ export const createStockMovement = withCompany<
     reference: data.reference,
     referenceType: "manual",
     userId: ctx.userId,
+  }) as Prisma.StockMovementUncheckedCreateInput;
+
+  await ctx.prisma.$transaction(async (tx) => {
+    await tx.stockMovement.create({ data: moveInsert });
+
+    if (data.type === "in") {
+      const invInsert = fromInventoryLot({
+        companyId: ctx.companyId,
+        productId: data.productId,
+        warehouseId: data.warehouseId,
+        lotNumber: data.lotNumber,
+        expiryDate: data.expiryDate,
+        quantity: data.quantity,
+        unitCost: 0,
+      }) as Prisma.InventoryUncheckedCreateInput;
+      await tx.inventory.create({ data: invInsert });
+    }
   });
-
-  const { error: moveError } = await ctx.supabase
-    .from("stock_movements")
-    .insert(moveInsert as never);
-  if (moveError) throw ERR.database(moveError.message);
-
-  if (data.type === "in") {
-    const invInsert = fromInventoryLot({
-      companyId: ctx.companyId,
-      productId: data.productId,
-      warehouseId: data.warehouseId,
-      lotNumber: data.lotNumber,
-      expiryDate: data.expiryDate,
-      quantity: data.quantity,
-      unitCost: 0,
-    });
-    const { error: invError } = await ctx.supabase
-      .from("inventory")
-      .insert(invInsert as never);
-    if (invError) throw ERR.database(invError.message);
-  }
 
   return ok();
 });
@@ -138,26 +134,11 @@ export const createStockMovement = withCompany<
 // GET EXPIRING LOTS
 // ============================================
 export const getExpiringLots = withAuth<void, ExpiringLot[]>(async (ctx) => {
-  if (ctx.demo) {
-    const today = new Date();
-    const lots = demoLots
-      .filter((l) => l.expiryDate)
-      .map((lot) => {
-        const expiry = new Date(lot.expiryDate!);
-        const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-        return { ...lot, daysLeft } as ExpiringLot;
-      })
-      .sort((a, b) => a.daysLeft - b.daysLeft);
-    return ok(lots);
-  }
-
-  const { data, error } = await ctx.supabase
-    .from("expiring_lots")
-    .select("*")
-    .order("expiry_date");
-
-  if (error) throw ERR.database(error.message);
-  return ok((data ?? []).map(toExpiringLot));
+  const rows = await ctx.prisma.expiringLot.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { expiryDate: "asc" },
+  });
+  return ok(rows.map(toExpiringLot));
 });
 
 // ============================================
@@ -171,49 +152,38 @@ export interface DashboardStats {
 }
 
 export const getDashboardStats = withAuth<void, DashboardStats>(async (ctx) => {
-  if (ctx.demo) {
-    const totalProducts = demoProducts.length;
-    const totalStock = demoProducts.reduce((sum, p) => sum + p.currentStock, 0);
-    const lowStock = demoProducts.filter(
-      (p) => p.stockStatus === "low" || p.stockStatus === "critical"
-    ).length;
-    const today = new Date();
-    const expiringCount = demoLots.filter((l) => {
-      if (!l.expiryDate) return false;
-      const days = Math.ceil(
-        (new Date(l.expiryDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-      );
-      return days > 0 && days <= 30;
-    }).length;
-    return ok({ totalProducts, totalStock, lowStock, expiringCount });
-  }
+  const [totalProducts, inventoryRows, expiringCount, lowStockCount] =
+    await Promise.all([
+      ctx.prisma.product.count({
+        where: { companyId: ctx.companyId, isActive: true },
+      }),
+      ctx.prisma.inventory.findMany({
+        where: { companyId: ctx.companyId },
+        select: { quantity: true },
+      }),
+      ctx.prisma.expiringLot.count({
+        where: {
+          companyId: ctx.companyId,
+          daysLeft: { gt: 0, lte: 30 },
+        },
+      }),
+      ctx.prisma.productStockSummary.count({
+        where: {
+          companyId: ctx.companyId,
+          stockStatus: { in: ["low", "critical"] },
+        },
+      }),
+    ]);
 
-  const [productsResult, inventoryResult, expiringResult] = await Promise.all([
-    ctx.supabase.from("products").select("id", { count: "exact" }).eq("is_active", true),
-    ctx.supabase.from("inventory").select("quantity"),
-    ctx.supabase
-      .from("expiring_lots")
-      .select("id", { count: "exact" })
-      .lte("days_left", 30)
-      .gt("days_left", 0),
-  ]);
-
-  const totalProducts = productsResult.count ?? 0;
-  const totalStock = (inventoryResult.data ?? []).reduce(
-    (sum, r) => sum + (r.quantity || 0),
+  const totalStock = inventoryRows.reduce(
+    (sum, r) => sum + Number(r.quantity),
     0
   );
-  const expiringCount = expiringResult.count ?? 0;
-
-  const { count: lowStockCount } = await ctx.supabase
-    .from("product_stock_summary")
-    .select("product_id", { count: "exact" })
-    .in("stock_status", ["low", "critical"]);
 
   return ok({
     totalProducts,
     totalStock,
-    lowStock: lowStockCount ?? 0,
+    lowStock: lowStockCount,
     expiringCount,
   });
 });

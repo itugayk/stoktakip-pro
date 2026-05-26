@@ -187,7 +187,7 @@ export function ProductsPageClient() {
       name: product.name,
       sku: product.sku,
       barcode: product.barcode || "",
-      categoryId: product.categoryId || categories[0]?.id || "cat-1",
+      categoryId: product.categoryId || categories[0]?.id || "",
       unit: product.unit,
       minStock: String(product.minStock),
       maxStock: String(product.maxStock),
@@ -317,7 +317,7 @@ export function ProductsPageClient() {
 
   // ========== ADD PRODUCT ==========
   const [newProduct, setNewProduct] = useState({
-    name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "cat-1", unit: "adet",
+    name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "", unit: "adet",
     minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "",
   });
 
@@ -405,7 +405,7 @@ export function ProductsPageClient() {
       setProducts((prev) => [addedProduct, ...prev]);
       setShowAddDialog(false);
       setBarcodeScannerActive(false);
-      setNewProduct({ name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "cat-1", unit: "adet", minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "" });
+      setNewProduct({ name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "", unit: "adet", minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "" });
       toast.success("Ürün başarıyla eklendi");
     } else {
       toast.error(result.error.message);

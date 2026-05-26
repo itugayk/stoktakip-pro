@@ -1,6 +1,6 @@
 "use server";
 
-import { withAuth, withCompany, ok, parseInput, z, ERR } from "@/lib/server";
+import { withAuth, withCompany, ok, parseInput, z } from "@/lib/server";
 
 export type FavoriteEntity = "product" | "supplier" | "customer" | "warehouse";
 
@@ -15,54 +15,52 @@ export const toggleFavorite = withCompany<
   { favorited: boolean }
 >(async (ctx, raw) => {
   const data = parseInput(toggleSchema, raw);
-  if (ctx.demo) return ok({ favorited: true });
 
-  // Check current state first to decide insert vs delete.
-  const { data: existing } = await ctx.supabase
-    .from("user_favorites")
-    .select("user_id")
-    .eq("user_id", ctx.userId)
-    .eq("entity_type", data.entityType)
-    .eq("entity_id", data.entityId)
-    .maybeSingle();
+  const key = {
+    userId_entityType_entityId: {
+      userId: ctx.userId,
+      entityType: data.entityType,
+      entityId: data.entityId,
+    },
+  };
+
+  const existing = await ctx.prisma.userFavorite.findUnique({
+    where: key,
+    select: { userId: true },
+  });
 
   if (existing) {
-    const { error } = await ctx.supabase
-      .from("user_favorites")
-      .delete()
-      .eq("user_id", ctx.userId)
-      .eq("entity_type", data.entityType)
-      .eq("entity_id", data.entityId);
-    if (error) throw ERR.database(error.message);
+    await ctx.prisma.userFavorite.delete({ where: key });
     return ok({ favorited: false });
   }
 
-  const { error } = await ctx.supabase.from("user_favorites").insert({
-    user_id: ctx.userId,
-    company_id: ctx.companyId,
-    entity_type: data.entityType,
-    entity_id: data.entityId,
-  } as never);
-  if (error) throw ERR.database(error.message);
+  await ctx.prisma.userFavorite.create({
+    data: {
+      userId: ctx.userId,
+      companyId: ctx.companyId,
+      entityType: data.entityType,
+      entityId: data.entityId,
+    },
+  });
   return ok({ favorited: true });
 });
 
-export const getFavorites = withAuth<FavoriteEntity | undefined, { entityType: FavoriteEntity; entityId: string }[]>(
-  async (ctx, entityType) => {
-    if (ctx.demo) return ok([]);
-    let q = ctx.supabase
-      .from("user_favorites")
-      .select("entity_type, entity_id")
-      .eq("user_id", ctx.userId);
-    if (entityType) q = q.eq("entity_type", entityType);
+export const getFavorites = withAuth<
+  FavoriteEntity | undefined,
+  { entityType: FavoriteEntity; entityId: string }[]
+>(async (ctx, entityType) => {
+  const rows = await ctx.prisma.userFavorite.findMany({
+    where: {
+      userId: ctx.userId,
+      ...(entityType ? { entityType } : {}),
+    },
+    select: { entityType: true, entityId: true },
+  });
 
-    const { data, error } = await q;
-    if (error) throw ERR.database(error.message);
-    return ok(
-      (data ?? []).map((r) => ({
-        entityType: r.entity_type as FavoriteEntity,
-        entityId: r.entity_id,
-      }))
-    );
-  }
-);
+  return ok(
+    rows.map((r) => ({
+      entityType: r.entityType as FavoriteEntity,
+      entityId: r.entityId,
+    }))
+  );
+});

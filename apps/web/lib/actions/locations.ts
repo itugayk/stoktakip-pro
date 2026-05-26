@@ -24,30 +24,34 @@ export interface LocationInventoryRow {
 
 const listSchema = z.object({ warehouseId: z.string() });
 
-export const listLocations = withAuth<z.input<typeof listSchema>, WarehouseLocation[]>(
-  async (ctx, raw) => {
-    const { warehouseId } = parseInput(listSchema, raw);
-    if (ctx.demo) return ok([]);
+export const listLocations = withAuth<
+  z.input<typeof listSchema>,
+  WarehouseLocation[]
+>(async (ctx, raw) => {
+  const { warehouseId } = parseInput(listSchema, raw);
 
-    const { data, error } = await ctx.supabase
-      .from("warehouse_locations")
-      .select("*")
-      .eq("warehouse_id", warehouseId)
-      .order("sort_order")
-      .order("name");
-    if (error) throw ERR.database(error.message);
+  // Verify warehouse belongs to current company.
+  const wh = await ctx.prisma.warehouse.findFirst({
+    where: { id: warehouseId, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!wh) throw ERR.notFound("Depo");
 
-    return ok(
-      (data ?? []).map((l) => ({
-        id: l.id,
-        warehouseId: l.warehouse_id,
-        name: l.name,
-        description: l.description ?? undefined,
-        sortOrder: l.sort_order ?? 0,
-      }))
-    );
-  }
-);
+  const rows = await ctx.prisma.warehouseLocation.findMany({
+    where: { warehouseId },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+
+  return ok(
+    rows.map((l) => ({
+      id: l.id,
+      warehouseId: l.warehouseId,
+      name: l.name,
+      description: l.description ?? undefined,
+      sortOrder: l.sortOrder ?? 0,
+    }))
+  );
+});
 
 const createSchema = z.object({
   warehouseId: z.string(),
@@ -56,30 +60,39 @@ const createSchema = z.object({
   sortOrder: z.number().int().optional(),
 });
 
-export const createLocation = withCompany<z.input<typeof createSchema>, { id: string }>(
-  async (ctx, raw) => {
-    const data = parseInput(createSchema, raw);
-    if (ctx.demo) return ok({ id: `loc-${Date.now()}` });
+export const createLocation = withCompany<
+  z.input<typeof createSchema>,
+  { id: string }
+>(async (ctx, raw) => {
+  const data = parseInput(createSchema, raw);
 
-    const { data: row, error } = await ctx.supabase
-      .from("warehouse_locations")
-      .insert({
-        warehouse_id: data.warehouseId,
-        name: data.name,
-        description: data.description || null,
-        sort_order: data.sortOrder ?? 0,
-      } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    return ok({ id: row.id });
-  }
-);
+  const wh = await ctx.prisma.warehouse.findFirst({
+    where: { id: data.warehouseId, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!wh) throw ERR.notFound("Depo");
+
+  const row = await ctx.prisma.warehouseLocation.create({
+    data: {
+      warehouseId: data.warehouseId,
+      name: data.name,
+      description: data.description || null,
+      sortOrder: data.sortOrder ?? 0,
+    },
+    select: { id: true },
+  });
+  return ok({ id: row.id });
+});
 
 export const deleteLocation = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("warehouse_locations").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  // Scope via the parent warehouse's company.
+  const loc = await ctx.prisma.warehouseLocation.findFirst({
+    where: { id, warehouse: { companyId: ctx.companyId } },
+    select: { id: true },
+  });
+  if (!loc) throw ERR.notFound("Lokasyon");
+
+  await ctx.prisma.warehouseLocation.delete({ where: { id } });
   return ok();
 });
 
@@ -90,24 +103,28 @@ export const getLocationInventory = withAuth<
   LocationInventoryRow[]
 >(async (ctx, raw) => {
   const { locationId } = parseInput(inventorySchema, raw);
-  if (ctx.demo) return ok([]);
 
-  const { data, error } = await ctx.supabase
-    .from("v_location_inventory")
-    .select("*")
-    .eq("location_id", locationId);
-  if (error) throw ERR.database(error.message);
+  // Verify location belongs to current company via its warehouse.
+  const loc = await ctx.prisma.warehouseLocation.findFirst({
+    where: { id: locationId, warehouse: { companyId: ctx.companyId } },
+    select: { id: true },
+  });
+  if (!loc) throw ERR.notFound("Lokasyon");
+
+  const rows = await ctx.prisma.locationInventory.findMany({
+    where: { locationId },
+  });
 
   return ok(
-    (data ?? []).map((row) => ({
-      locationId: row.location_id,
-      locationName: row.location_name,
-      productId: row.product_id,
-      productName: row.product_name,
-      productSku: row.product_sku,
-      productUnit: row.product_unit,
-      lotNumber: row.lot_number,
-      expiryDate: row.expiry_date,
+    rows.map((row) => ({
+      locationId: row.locationId,
+      locationName: row.locationName,
+      productId: row.productId,
+      productName: row.productName,
+      productSku: row.productSku,
+      productUnit: row.productUnit,
+      lotNumber: row.lotNumber,
+      expiryDate: row.expiryDate ? row.expiryDate.toISOString().slice(0, 10) : null,
       quantity: Number(row.quantity ?? 0),
     }))
   );

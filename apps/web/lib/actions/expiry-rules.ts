@@ -26,81 +26,78 @@ const upsertSchema = z.object({
 });
 
 export const listExpiryRules = withAuth<void, ExpiryRule[]>(async (ctx) => {
-  if (ctx.demo) return ok([]);
-
-  const { data, error } = await ctx.supabase
-    .from("expiry_rules")
-    .select("*")
-    .order("trigger_days");
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.expiryRule.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { triggerDays: "asc" },
+  });
 
   return ok(
-    (data ?? []).map((r) => ({
+    rows.map((r) => ({
       id: r.id,
       name: r.name,
-      triggerDays: r.trigger_days,
-      categoryId: r.category_id ?? undefined,
+      triggerDays: r.triggerDays,
+      categoryId: r.categoryId ?? undefined,
       channels: (r.channels ?? []) as Channel[],
-      recipients: r.recipients ?? undefined,
-      isActive: r.is_active,
-      lastRunAt: r.last_run_at ?? undefined,
+      recipients: r.recipients?.length ? r.recipients : undefined,
+      isActive: r.isActive,
+      lastRunAt: r.lastRunAt?.toISOString() ?? undefined,
     }))
   );
 });
 
-export const upsertExpiryRule = withCompany<z.input<typeof upsertSchema>, { id: string }>(
-  async (ctx, raw) => {
-    const data = parseInput(upsertSchema, raw);
-    if (ctx.demo) return ok({ id: data.id ?? `rule-${Date.now()}` });
+export const upsertExpiryRule = withCompany<
+  z.input<typeof upsertSchema>,
+  { id: string }
+>(async (ctx, raw) => {
+  const data = parseInput(upsertSchema, raw);
 
-    if (data.id) {
-      const { error } = await ctx.supabase
-        .from("expiry_rules")
-        .update({
-          name: data.name,
-          trigger_days: data.triggerDays,
-          category_id: data.categoryId || null,
-          channels: data.channels,
-          recipients: data.recipients ?? null,
-          is_active: data.isActive,
-        })
-        .eq("id", data.id);
-      if (error) throw ERR.database(error.message);
-      return ok({ id: data.id });
-    }
+  const payload = {
+    name: data.name,
+    triggerDays: data.triggerDays,
+    categoryId: data.categoryId || null,
+    channels: data.channels,
+    recipients: data.recipients ?? [],
+    isActive: data.isActive,
+  };
 
-    const { data: row, error } = await ctx.supabase
-      .from("expiry_rules")
-      .insert({
-        company_id: ctx.companyId,
-        name: data.name,
-        trigger_days: data.triggerDays,
-        category_id: data.categoryId || null,
-        channels: data.channels,
-        recipients: data.recipients ?? null,
-        is_active: data.isActive,
-      } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    return ok({ id: row.id });
+  if (data.id) {
+    const exists = await ctx.prisma.expiryRule.findFirst({
+      where: { id: data.id, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!exists) throw ERR.notFound("Kural");
+
+    await ctx.prisma.expiryRule.update({
+      where: { id: data.id },
+      data: payload,
+    });
+    return ok({ id: data.id });
   }
-);
+
+  const row = await ctx.prisma.expiryRule.create({
+    data: { ...payload, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  return ok({ id: row.id });
+});
 
 export const deleteExpiryRule = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("expiry_rules").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.expiryRule.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Kural");
   return ok();
 });
 
 /**
- * Manually fire the rule engine. Useful for "Run now" buttons; the real
- * schedule is the daily Postgres cron.
+ * Manually fire the rule engine. The real schedule is the daily Postgres cron.
+ * The function `run_expiry_rules()` ships via `prisma/sql/03_run_expiry_rules.sql`.
  */
-export const runExpiryRulesNow = withCompany<void, { fired: number }>(async (ctx) => {
-  if (ctx.demo) return ok({ fired: 0 });
-  const { data, error } = await ctx.supabase.rpc("run_expiry_rules");
-  if (error) throw ERR.database(error.message);
-  return ok({ fired: Number(data ?? 0) });
-});
+export const runExpiryRulesNow = withCompany<void, { fired: number }>(
+  async (ctx) => {
+    const result = await ctx.prisma.$queryRaw<{ run_expiry_rules: number }[]>`
+      SELECT run_expiry_rules() AS run_expiry_rules
+    `;
+    return ok({ fired: Number(result[0]?.run_expiry_rules ?? 0) });
+  }
+);

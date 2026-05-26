@@ -1,19 +1,17 @@
-import { updateSession } from "@/lib/supabase/middleware";
-import { type NextRequest } from "next/server";
+import NextAuth from "next-auth";
+import { authConfig } from "@/lib/auth.config";
 
-export async function proxy(request: NextRequest) {
-  return await updateSession(request);
-}
+/**
+ * Edge-runtime middleware. Uses the Edge-safe NextAuth config
+ * (no Prisma, no bcrypt). Login/logout state comes from the JWT cookie.
+ *
+ * Exported as `proxy` — Next.js 16+ renamed the middleware export.
+ */
+const { auth } = NextAuth(authConfig);
+export const proxy = auth;
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public files
-     */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

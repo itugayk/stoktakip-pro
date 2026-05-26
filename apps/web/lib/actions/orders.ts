@@ -1,88 +1,111 @@
 "use server";
 
-import { withAuth, withRole, ok, fail, parseInput, z, ERR, logAudit } from "@/lib/server";
+import {
+  withAuth,
+  withRole,
+  ok,
+  fail,
+  parseInput,
+  z,
+  ERR,
+  logAudit,
+} from "@/lib/server";
 
-export type POStatus = "draft" | "pending" | "approved" | "received" | "partial" | "cancelled";
-export type SOStatus = "draft" | "pending" | "approved" | "shipped" | "delivered" | "cancelled";
+export type POStatus =
+  | "draft"
+  | "pending"
+  | "approved"
+  | "received"
+  | "partial"
+  | "cancelled";
+export type SOStatus =
+  | "draft"
+  | "pending"
+  | "approved"
+  | "shipped"
+  | "delivered"
+  | "cancelled";
 
 // ============================================
 // 4.1 — PURCHASE ORDER STATE MACHINE
 // ============================================
 
 const idSchema = z.object({ orderId: z.string() });
-const rejectSchema = z.object({ orderId: z.string(), reason: z.string().min(1, "Red sebebi gerekli") });
-
-export const submitForApproval = withAuth<z.input<typeof idSchema>, void>(async (ctx, raw) => {
-  const { orderId } = parseInput(idSchema, raw);
-  if (ctx.demo) return ok();
-
-  const { data: before, error: readErr } = await ctx.supabase
-    .from("purchase_orders")
-    .select("status, total_amount")
-    .eq("id", orderId)
-    .single();
-  if (readErr) throw ERR.database(readErr.message);
-  if (before.status !== "draft") {
-    return fail("invalid_state", "Sadece draft siparişler onaya gönderilebilir");
-  }
-
-  const { error } = await ctx.supabase
-    .from("purchase_orders")
-    .update({ status: "pending" })
-    .eq("id", orderId);
-  if (error) throw ERR.database(error.message);
-
-  await logAudit(ctx, {
-    action: "update",
-    table: "purchase_orders",
-    recordId: orderId,
-    oldData: { status: "draft" },
-    newData: { status: "pending" },
-  });
-  return ok();
+const rejectSchema = z.object({
+  orderId: z.string(),
+  reason: z.string().min(1, "Red sebebi gerekli"),
 });
+
+export const submitForApproval = withAuth<z.input<typeof idSchema>, void>(
+  async (ctx, raw) => {
+    const { orderId } = parseInput(idSchema, raw);
+
+    const before = await ctx.prisma.purchaseOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: { status: true, totalAmount: true },
+    });
+    if (!before) throw ERR.notFound("Sipariş");
+    if (before.status !== "draft") {
+      return fail(
+        "invalid_state",
+        "Sadece draft siparişler onaya gönderilebilir"
+      );
+    }
+
+    await ctx.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: { status: "pending" },
+    });
+
+    await logAudit(ctx, {
+      action: "update",
+      table: "purchase_orders",
+      recordId: orderId,
+      oldData: { status: "draft" },
+      newData: { status: "pending" },
+    });
+    return ok();
+  }
+);
 
 /** Approve a PO. Restricted to admin + manager. */
 export const approveOrder = withRole<z.input<typeof idSchema>, void>(
   ["admin", "manager"],
   async (ctx, raw) => {
     const { orderId } = parseInput(idSchema, raw);
-    if (ctx.demo) return ok();
 
-    const { data: before, error: readErr } = await ctx.supabase
-      .from("purchase_orders")
-      .select("status, total_amount, company_id")
-      .eq("id", orderId)
-      .single();
-    if (readErr) throw ERR.database(readErr.message);
+    const before = await ctx.prisma.purchaseOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: { status: true, totalAmount: true, companyId: true },
+    });
+    if (!before) throw ERR.notFound("Sipariş");
     if (before.status !== "pending") {
-      return fail("invalid_state", "Sadece onay bekleyen siparişler onaylanabilir");
+      return fail(
+        "invalid_state",
+        "Sadece onay bekleyen siparişler onaylanabilir"
+      );
     }
 
-    // Honor companies.settings.po_approval_threshold if set: amounts beyond
-    // the threshold may require an admin (manager won't suffice). Manager who
-    // is over-threshold is still allowed if they have admin role downstream.
+    // Manager-only threshold check.
     if (ctx.role === "manager") {
-      const { data: company } = await ctx.supabase
-        .from("companies")
-        .select("settings")
-        .eq("id", before.company_id)
-        .single();
+      const company = await ctx.prisma.company.findUnique({
+        where: { id: before.companyId },
+        select: { settings: true },
+      });
       const threshold = (company?.settings as { po_approval_threshold?: number } | null)
         ?.po_approval_threshold;
-      if (typeof threshold === "number" && Number(before.total_amount) > threshold) {
+      if (typeof threshold === "number" && Number(before.totalAmount) > threshold) {
         return fail(
           "threshold_exceeded",
-          `Bu tutar (${before.total_amount}₺) manager onay limitini (${threshold}₺) aşıyor`
+          `Bu tutar (${before.totalAmount}₺) manager onay limitini (${threshold}₺) aşıyor`
         );
       }
     }
 
-    const { error } = await ctx.supabase
-      .from("purchase_orders")
-      .update({ status: "approved" })
-      .eq("id", orderId);
-    if (error) throw ERR.database(error.message);
+    await ctx.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: { status: "approved" },
+    });
 
     await logAudit(ctx, {
       action: "approve",
@@ -99,27 +122,30 @@ export const rejectOrder = withRole<z.input<typeof rejectSchema>, void>(
   ["admin", "manager"],
   async (ctx, raw) => {
     const { orderId, reason } = parseInput(rejectSchema, raw);
-    if (ctx.demo) return ok();
 
-    const { data: before } = await ctx.supabase
-      .from("purchase_orders")
-      .select("status, notes")
-      .eq("id", orderId)
-      .single();
+    const before = await ctx.prisma.purchaseOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: { status: true, notes: true },
+    });
     if (!before) throw ERR.notFound("Sipariş");
     if (before.status !== "pending") {
-      return fail("invalid_state", "Sadece onay bekleyen siparişler reddedilebilir");
+      return fail(
+        "invalid_state",
+        "Sadece onay bekleyen siparişler reddedilebilir"
+      );
     }
 
-    const notesAppendix = `\n[RED ${new Date().toISOString().slice(0, 10)}] ${reason}`;
-    const { error } = await ctx.supabase
-      .from("purchase_orders")
-      .update({
+    const notesAppendix = `\n[RED ${new Date()
+      .toISOString()
+      .slice(0, 10)}] ${reason}`;
+
+    await ctx.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: {
         status: "cancelled",
         notes: (before.notes ?? "") + notesAppendix,
-      })
-      .eq("id", orderId);
-    if (error) throw ERR.database(error.message);
+      },
+    });
 
     await logAudit(ctx, {
       action: "reject",
@@ -132,29 +158,147 @@ export const rejectOrder = withRole<z.input<typeof rejectSchema>, void>(
   }
 );
 
-export const cancelOrder = withAuth<z.input<typeof idSchema>, void>(async (ctx, raw) => {
-  const { orderId } = parseInput(idSchema, raw);
-  if (ctx.demo) return ok();
+export const cancelOrder = withAuth<z.input<typeof idSchema>, void>(
+  async (ctx, raw) => {
+    const { orderId } = parseInput(idSchema, raw);
 
-  const { error } = await ctx.supabase
-    .from("purchase_orders")
-    .update({ status: "cancelled" })
-    .eq("id", orderId)
-    .in("status", ["draft", "pending"]);
-  if (error) throw ERR.database(error.message);
+    const res = await ctx.prisma.purchaseOrder.updateMany({
+      where: {
+        id: orderId,
+        companyId: ctx.companyId,
+        status: { in: ["draft", "pending"] },
+      },
+      data: { status: "cancelled" },
+    });
 
-  await logAudit(ctx, {
-    action: "update",
-    table: "purchase_orders",
-    recordId: orderId,
-    newData: { status: "cancelled" },
-  });
-  return ok();
-});
+    if (res.count === 0) {
+      return fail("invalid_state", "Sipariş iptal edilemez veya bulunamadı");
+    }
+
+    await logAudit(ctx, {
+      action: "update",
+      table: "purchase_orders",
+      recordId: orderId,
+      newData: { status: "cancelled" },
+    });
+    return ok();
+  }
+);
 
 // ============================================
 // 4.2 — PURCHASE ORDER RECEIVING
 // ============================================
+
+export interface ReceivableLine {
+  itemId: string;
+  productId: string;
+  productName: string;
+  productSku: string;
+  productBarcode?: string;
+  ordered: number;
+  alreadyReceived: number;
+  unitPrice: number;
+}
+
+export interface ReceivablePO {
+  orderNumber: string;
+  lines: ReceivableLine[];
+}
+
+/** Server-side loader for the mal-kabul page. */
+export const getPurchaseOrderForReceiving = withAuth<
+  string,
+  ReceivablePO | null
+>(async (ctx, orderId) => {
+  const order = await ctx.prisma.purchaseOrder.findFirst({
+    where: { id: orderId, companyId: ctx.companyId },
+    select: {
+      orderNumber: true,
+      items: {
+        select: {
+          id: true,
+          productId: true,
+          quantity: true,
+          receivedQuantity: true,
+          unitPrice: true,
+          product: { select: { name: true, sku: true, barcode: true } },
+        },
+      },
+    },
+  });
+  if (!order) return ok(null);
+
+  return ok({
+    orderNumber: order.orderNumber,
+    lines: order.items.map((it) => ({
+      itemId: it.id,
+      productId: it.productId,
+      productName: it.product?.name ?? "Bilinmeyen",
+      productSku: it.product?.sku ?? "",
+      productBarcode: it.product?.barcode ?? undefined,
+      ordered: Number(it.quantity),
+      alreadyReceived: Number(it.receivedQuantity ?? 0),
+      unitPrice: Number(it.unitPrice),
+    })),
+  });
+});
+
+export interface PickableLine {
+  itemId: string;
+  productId: string;
+  productName: string;
+  productSku: string;
+  productBarcode?: string;
+  ordered: number;
+  alreadyPicked: number;
+  unitPrice: number;
+  lotNumber?: string;
+}
+
+export interface PickableSO {
+  orderNumber: string;
+  lines: PickableLine[];
+}
+
+/** Server-side loader for the toplama page. */
+export const getSalesOrderForPicking = withAuth<string, PickableSO | null>(
+  async (ctx, orderId) => {
+    const order = await ctx.prisma.salesOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: {
+        orderNumber: true,
+        items: {
+          select: {
+            id: true,
+            productId: true,
+            quantity: true,
+            pickedQty: true,
+            unitPrice: true,
+            lotNumber: true,
+            product: { select: { name: true, sku: true, barcode: true } },
+          },
+        },
+      },
+    });
+    if (!order) return ok(null);
+
+    return ok({
+      orderNumber: order.orderNumber,
+      lines: order.items.map((it) => ({
+        itemId: it.id,
+        productId: it.productId,
+        productName: it.product?.name ?? "Bilinmeyen",
+        productSku: it.product?.sku ?? "",
+        productBarcode: it.product?.barcode ?? undefined,
+        ordered: Number(it.quantity),
+        alreadyPicked: Number(it.pickedQty ?? 0),
+        unitPrice: Number(it.unitPrice),
+        lotNumber: it.lotNumber ?? undefined,
+      })),
+    });
+  }
+);
+
 
 const receiveSchema = z.object({
   orderId: z.string(),
@@ -177,83 +321,96 @@ export const receivePurchaseOrder = withAuth<
   { movementsCreated: number; status: POStatus }
 >(async (ctx, raw) => {
   const { orderId, lines } = parseInput(receiveSchema, raw);
-  if (ctx.demo) return ok({ movementsCreated: lines.length, status: "received" });
 
-  const { data: order } = await ctx.supabase
-    .from("purchase_orders")
-    .select("id, warehouse_id, company_id, status")
-    .eq("id", orderId)
-    .single();
+  const order = await ctx.prisma.purchaseOrder.findFirst({
+    where: { id: orderId, companyId: ctx.companyId },
+    select: { id: true, warehouseId: true, companyId: true, status: true },
+  });
   if (!order) throw ERR.notFound("Sipariş");
   if (order.status !== "approved" && order.status !== "partial") {
     return fail("invalid_state", "Sipariş onaylı veya kısmen alınmış olmalı");
   }
 
-  let movementsCreated = 0;
-  for (const line of lines) {
-    if (line.quantity <= 0) continue;
-    // Read the matching order item to learn product_id.
-    const { data: item } = await ctx.supabase
-      .from("purchase_order_items")
-      .select("id, product_id, quantity, received_quantity, unit_price")
-      .eq("id", line.itemId)
-      .single();
-    if (!item) continue;
+  // Do all writes inside a single transaction. If any line fails mid-flight,
+  // the whole receive is rolled back (safer than the old "continue on error").
+  const movementsCreated = await ctx.prisma.$transaction(async (tx) => {
+    let created = 0;
 
-    const { error: moveErr } = await ctx.supabase.from("stock_movements").insert({
-      company_id: order.company_id,
-      product_id: item.product_id,
-      movement_type: "in",
-      quantity: line.quantity,
-      to_warehouse_id: order.warehouse_id,
-      lot_number: line.lotNumber ?? null,
-      expiry_date: line.expiryDate ?? null,
-      unit_cost: item.unit_price,
-      reason: "purchase_order_receive",
-      reference_type: "purchase_order",
-      reference_number: orderId,
-      user_id: ctx.userId,
-    } as never);
-    if (moveErr) continue;
+    for (const line of lines) {
+      if (line.quantity <= 0) continue;
 
-    // Bump inventory.
-    await ctx.supabase.from("inventory").insert({
-      company_id: order.company_id,
-      product_id: item.product_id,
-      warehouse_id: order.warehouse_id,
-      lot_number: line.lotNumber ?? null,
-      expiry_date: line.expiryDate ?? null,
-      quantity: line.quantity,
-      unit_cost: item.unit_price,
-    } as never);
+      const item = await tx.purchaseOrderItem.findFirst({
+        where: { id: line.itemId, order: { id: orderId } },
+        select: {
+          id: true,
+          productId: true,
+          quantity: true,
+          receivedQuantity: true,
+          unitPrice: true,
+        },
+      });
+      if (!item) continue;
 
-    // Update received_quantity on the item.
-    await ctx.supabase
-      .from("purchase_order_items")
-      .update({ received_quantity: Number(item.received_quantity ?? 0) + line.quantity })
-      .eq("id", line.itemId);
+      await tx.stockMovement.create({
+        data: {
+          companyId: order.companyId,
+          productId: item.productId,
+          movementType: "in",
+          quantity: line.quantity,
+          toWarehouseId: order.warehouseId,
+          lotNumber: line.lotNumber ?? null,
+          expiryDate: line.expiryDate ?? null,
+          unitCost: item.unitPrice,
+          reason: "purchase_order_receive",
+          referenceType: "purchase_order",
+          referenceNumber: orderId,
+          userId: ctx.userId,
+        },
+      });
 
-    movementsCreated++;
-  }
+      await tx.inventory.create({
+        data: {
+          companyId: order.companyId,
+          productId: item.productId,
+          warehouseId: order.warehouseId,
+          lotNumber: line.lotNumber ?? null,
+          expiryDate: line.expiryDate ?? null,
+          quantity: line.quantity,
+          unitCost: item.unitPrice,
+        },
+      });
+
+      await tx.purchaseOrderItem.update({
+        where: { id: line.itemId },
+        data: {
+          receivedQuantity:
+            Number(item.receivedQuantity ?? 0) + line.quantity,
+        },
+      });
+
+      created++;
+    }
+
+    return created;
+  });
 
   // Decide new status: did all items reach their ordered quantity?
-  const { data: items } = await ctx.supabase
-    .from("purchase_order_items")
-    .select("quantity, received_quantity")
-    .eq("order_id", orderId);
-
-  const allFull = (items ?? []).every(
-    (i) => Number(i.received_quantity ?? 0) >= Number(i.quantity)
+  const items = await ctx.prisma.purchaseOrderItem.findMany({
+    where: { orderId },
+    select: { quantity: true, receivedQuantity: true },
+  });
+  const allFull = items.every(
+    (i) => Number(i.receivedQuantity) >= Number(i.quantity)
   );
   const nextStatus: POStatus = allFull ? "received" : "partial";
 
-  await ctx.supabase
-    .from("purchase_orders")
-    .update({
+  await ctx.prisma.purchaseOrder.update({
+    where: { id: orderId },
+    data: {
       status: nextStatus,
-      received_date: allFull ? new Date().toISOString().slice(0, 10) : null,
-    })
-    .eq("id", orderId);
+      receivedDate: allFull ? new Date() : null,
+    },
+  });
 
   await logAudit(ctx, {
     action: "update",
@@ -281,44 +438,50 @@ const pickSchema = z.object({
     .min(1),
 });
 
-export const recordPick = withAuth<z.input<typeof pickSchema>, void>(async (ctx, raw) => {
-  const { orderId, lines } = parseInput(pickSchema, raw);
-  if (ctx.demo) return ok();
+export const recordPick = withAuth<z.input<typeof pickSchema>, void>(
+  async (ctx, raw) => {
+    const { orderId, lines } = parseInput(pickSchema, raw);
 
-  for (const ln of lines) {
-    await ctx.supabase
-      .from("sales_order_items")
-      .update({ picked_qty: ln.pickedQty })
-      .eq("id", ln.itemId);
+    // Verify the order belongs to this company.
+    const order = await ctx.prisma.salesOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!order) throw ERR.notFound("Sipariş");
+
+    await ctx.prisma.$transaction(async (tx) => {
+      for (const ln of lines) {
+        await tx.salesOrderItem.updateMany({
+          where: { id: ln.itemId, orderId },
+          data: { pickedQty: ln.pickedQty },
+        });
+      }
+
+      const items = await tx.salesOrderItem.findMany({
+        where: { orderId },
+        select: { quantity: true, pickedQty: true },
+      });
+      const allPicked = items.every(
+        (i) => Number(i.pickedQty) >= Number(i.quantity)
+      );
+
+      if (allPicked) {
+        await tx.salesOrder.update({
+          where: { id: orderId },
+          data: { pickedAt: new Date(), pickedById: ctx.userId },
+        });
+      }
+    });
+
+    await logAudit(ctx, {
+      action: "update",
+      table: "sales_orders",
+      recordId: orderId,
+      newData: { picked: true },
+    });
+    return ok();
   }
-
-  // Mark when all items have picked_qty >= quantity.
-  const { data: items } = await ctx.supabase
-    .from("sales_order_items")
-    .select("quantity, picked_qty")
-    .eq("order_id", orderId);
-  const allPicked = (items ?? []).every(
-    (i) => Number((i as { picked_qty?: number }).picked_qty ?? 0) >= Number(i.quantity)
-  );
-
-  if (allPicked) {
-    await ctx.supabase
-      .from("sales_orders")
-      .update({
-        picked_at: new Date().toISOString(),
-        picked_by: ctx.userId,
-      } as never)
-      .eq("id", orderId);
-  }
-
-  await logAudit(ctx, {
-    action: "update",
-    table: "sales_orders",
-    recordId: orderId,
-    newData: { picked: allPicked },
-  });
-  return ok();
-});
+);
 
 const shipSchema = z.object({
   orderId: z.string(),
@@ -329,80 +492,100 @@ const shipSchema = z.object({
   invoiceNo: z.string().optional(),
 });
 
-export const shipSalesOrder = withAuth<z.input<typeof shipSchema>, { movementsCreated: number }>(
-  async (ctx, raw) => {
-    const data = parseInput(shipSchema, raw);
-    if (ctx.demo) return ok({ movementsCreated: 0 });
+export const shipSalesOrder = withAuth<
+  z.input<typeof shipSchema>,
+  { movementsCreated: number }
+>(async (ctx, raw) => {
+  const data = parseInput(shipSchema, raw);
 
-    const { data: order } = await ctx.supabase
-      .from("sales_orders")
-      .select("id, warehouse_id, company_id, status, notes")
-      .eq("id", data.orderId)
-      .single();
-    if (!order) throw ERR.notFound("Sipariş");
-    if (order.status !== "approved" && order.status !== "pending") {
-      return fail("invalid_state", "Sadece onaylı veya hazır siparişler sevkedilebilir");
-    }
-
-    const { data: items } = await ctx.supabase
-      .from("sales_order_items")
-      .select("id, product_id, quantity, picked_qty, lot_number, unit_price")
-      .eq("order_id", data.orderId);
-
-    let movementsCreated = 0;
-    for (const it of items ?? []) {
-      const item = it as unknown as {
-        product_id: string;
-        quantity: number;
-        picked_qty?: number;
-        lot_number?: string | null;
-        unit_price?: number;
-      };
-      const qty = Number(item.picked_qty ?? item.quantity);
-      const { error } = await ctx.supabase.from("stock_movements").insert({
-        company_id: order.company_id,
-        product_id: item.product_id,
-        movement_type: "out",
-        quantity: qty,
-        from_warehouse_id: order.warehouse_id,
-        lot_number: item.lot_number ?? null,
-        unit_cost: item.unit_price ?? null,
-        reason: "sales_order_ship",
-        reference_type: "sales_order",
-        reference_number: data.orderId,
-        user_id: ctx.userId,
-      } as never);
-      if (!error) movementsCreated++;
-    }
-
-    const noteLines = [
-      `[SEVK ${new Date().toISOString().slice(0, 10)}] ${data.carrier}`,
-      data.trackingNumber ? `Takip: ${data.trackingNumber}` : null,
-      data.waybill ? `İrsaliye: ${data.waybill}` : null,
-      data.invoiceNo ? `Fatura: ${data.invoiceNo}` : null,
-    ]
-      .filter(Boolean)
-      .join(" • ");
-
-    await ctx.supabase
-      .from("sales_orders")
-      .update({
-        status: "shipped",
-        ship_date: data.shipDate ?? new Date().toISOString().slice(0, 10),
-        notes: (order.notes ?? "") + "\n" + noteLines,
-      })
-      .eq("id", data.orderId);
-
-    await logAudit(ctx, {
-      action: "update",
-      table: "sales_orders",
-      recordId: data.orderId,
-      newData: { status: "shipped", carrier: data.carrier, trackingNumber: data.trackingNumber },
-    });
-
-    return ok({ movementsCreated });
+  const order = await ctx.prisma.salesOrder.findFirst({
+    where: { id: data.orderId, companyId: ctx.companyId },
+    select: {
+      id: true,
+      warehouseId: true,
+      companyId: true,
+      status: true,
+      notes: true,
+    },
+  });
+  if (!order) throw ERR.notFound("Sipariş");
+  if (order.status !== "approved" && order.status !== "pending") {
+    return fail(
+      "invalid_state",
+      "Sadece onaylı veya hazır siparişler sevkedilebilir"
+    );
   }
-);
+
+  const items = await ctx.prisma.salesOrderItem.findMany({
+    where: { orderId: data.orderId },
+    select: {
+      id: true,
+      productId: true,
+      quantity: true,
+      pickedQty: true,
+      lotNumber: true,
+      unitPrice: true,
+    },
+  });
+
+  const movementsCreated = await ctx.prisma.$transaction(async (tx) => {
+    let count = 0;
+    for (const item of items) {
+      const qty = Number(item.pickedQty) || Number(item.quantity);
+      if (qty <= 0) continue;
+      await tx.stockMovement.create({
+        data: {
+          companyId: order.companyId,
+          productId: item.productId,
+          movementType: "out",
+          quantity: qty,
+          fromWarehouseId: order.warehouseId,
+          lotNumber: item.lotNumber ?? null,
+          unitCost: item.unitPrice,
+          reason: "sales_order_ship",
+          referenceType: "sales_order",
+          referenceNumber: data.orderId,
+          userId: ctx.userId,
+        },
+      });
+      count++;
+    }
+    return count;
+  });
+
+  const noteLines = [
+    `[SEVK ${new Date().toISOString().slice(0, 10)}] ${data.carrier}`,
+    data.trackingNumber ? `Takip: ${data.trackingNumber}` : null,
+    data.waybill ? `İrsaliye: ${data.waybill}` : null,
+    data.invoiceNo ? `Fatura: ${data.invoiceNo}` : null,
+  ]
+    .filter(Boolean)
+    .join(" • ");
+
+  await ctx.prisma.salesOrder.update({
+    where: { id: data.orderId },
+    data: {
+      status: "shipped",
+      shipDate: data.shipDate
+        ? new Date(data.shipDate)
+        : new Date(),
+      notes: (order.notes ?? "") + "\n" + noteLines,
+    },
+  });
+
+  await logAudit(ctx, {
+    action: "update",
+    table: "sales_orders",
+    recordId: data.orderId,
+    newData: {
+      status: "shipped",
+      carrier: data.carrier,
+      trackingNumber: data.trackingNumber,
+    },
+  });
+
+  return ok({ movementsCreated });
+});
 
 // ============================================
 // 4.10 — OPERATIONS DASHBOARD (counts of open work)
@@ -417,34 +600,57 @@ export interface OperationsSummary {
   pendingReturns: number;
 }
 
-export const getOperationsSummary = withAuth<void, OperationsSummary>(async (ctx) => {
-  if (ctx.demo) {
-    return ok({
-      pendingPOs: 2,
-      approvedPOs: 1,
-      pickingSOs: 3,
-      shippingSOs: 1,
-      openCounts: 1,
-      pendingReturns: 0,
-    });
-  }
-
-  const [pendingPOs, approvedPOs, pickingSOs, shippingSOs, openCounts, pendingReturns] =
-    await Promise.all([
-      ctx.supabase.from("purchase_orders").select("id", { count: "exact", head: true }).eq("status", "pending"),
-      ctx.supabase.from("purchase_orders").select("id", { count: "exact", head: true }).eq("status", "approved"),
-      ctx.supabase.from("sales_orders").select("id", { count: "exact", head: true }).in("status", ["pending", "approved"]).is("picked_at", null),
-      ctx.supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("status", "approved").not("picked_at", "is", null),
-      ctx.supabase.from("stock_counts").select("id", { count: "exact", head: true }).in("status", ["open", "in_progress", "review"]),
-      ctx.supabase.from("returns").select("id", { count: "exact", head: true }).in("status", ["pending", "approved"]),
+export const getOperationsSummary = withAuth<void, OperationsSummary>(
+  async (ctx) => {
+    const [
+      pendingPOs,
+      approvedPOs,
+      pickingSOs,
+      shippingSOs,
+      openCounts,
+      pendingReturns,
+    ] = await Promise.all([
+      ctx.prisma.purchaseOrder.count({
+        where: { companyId: ctx.companyId, status: "pending" },
+      }),
+      ctx.prisma.purchaseOrder.count({
+        where: { companyId: ctx.companyId, status: "approved" },
+      }),
+      ctx.prisma.salesOrder.count({
+        where: {
+          companyId: ctx.companyId,
+          status: { in: ["pending", "approved"] },
+          pickedAt: null,
+        },
+      }),
+      ctx.prisma.salesOrder.count({
+        where: {
+          companyId: ctx.companyId,
+          status: "approved",
+          pickedAt: { not: null },
+        },
+      }),
+      ctx.prisma.stockCount.count({
+        where: {
+          companyId: ctx.companyId,
+          status: { in: ["open", "in_progress", "review"] },
+        },
+      }),
+      ctx.prisma.return.count({
+        where: {
+          companyId: ctx.companyId,
+          status: { in: ["pending", "approved"] },
+        },
+      }),
     ]);
 
-  return ok({
-    pendingPOs: pendingPOs.count ?? 0,
-    approvedPOs: approvedPOs.count ?? 0,
-    pickingSOs: pickingSOs.count ?? 0,
-    shippingSOs: shippingSOs.count ?? 0,
-    openCounts: openCounts.count ?? 0,
-    pendingReturns: pendingReturns.count ?? 0,
-  });
-});
+    return ok({
+      pendingPOs,
+      approvedPOs,
+      pickingSOs,
+      shippingSOs,
+      openCounts,
+      pendingReturns,
+    });
+  }
+);

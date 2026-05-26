@@ -1,6 +1,7 @@
 "use server";
 
-import { withCompany, ok, parseInput, z, ERR } from "@/lib/server";
+import type { Prisma } from "@prisma/client";
+import { withCompany, ok, parseInput, z } from "@/lib/server";
 import { fromProduct } from "@/lib/mappers";
 
 const bulkImportSchema = z.object({
@@ -29,18 +30,21 @@ const bulkImportSchema = z.object({
  */
 export const bulkImportProducts = withCompany<
   z.input<typeof bulkImportSchema>,
-  { created: number; updated: number; errors: { sku: string; message: string }[] }
+  {
+    created: number;
+    updated: number;
+    errors: { sku: string; message: string }[];
+  }
 >(async (ctx, raw) => {
   const { rows } = parseInput(bulkImportSchema, raw);
-  if (ctx.demo) return ok({ created: rows.length, updated: 0, errors: [] });
 
   // Pre-load categories (small table).
-  const { data: existingCats } = await ctx.supabase
-    .from("categories")
-    .select("id, name")
-    .eq("company_id", ctx.companyId);
+  const existingCats = await ctx.prisma.category.findMany({
+    where: { companyId: ctx.companyId },
+    select: { id: true, name: true },
+  });
   const catByName = new Map<string, string>(
-    (existingCats ?? []).map((c) => [c.name.toLowerCase(), c.id])
+    existingCats.map((c) => [c.name.toLowerCase(), c.id])
   );
 
   // Auto-create missing categories in a batch.
@@ -50,27 +54,31 @@ export const bulkImportProducts = withCompany<
       missingCategories.add(r.categoryName);
     }
   }
-  if (missingCategories.size > 0) {
-    const inserts = Array.from(missingCategories).map((name) => ({
-      company_id: ctx.companyId,
-      name,
-    }));
-    const { data: created } = await ctx.supabase
-      .from("categories")
-      .insert(inserts as never)
-      .select("id, name");
-    for (const c of created ?? []) catByName.set(c.name.toLowerCase(), c.id);
+  for (const name of missingCategories) {
+    try {
+      const created = await ctx.prisma.category.create({
+        data: { companyId: ctx.companyId, name },
+        select: { id: true },
+      });
+      catByName.set(name.toLowerCase(), created.id);
+    } catch {
+      // Race or duplicate — try fetching the existing one
+      const existing = await ctx.prisma.category.findFirst({
+        where: { companyId: ctx.companyId, name },
+        select: { id: true },
+      });
+      if (existing) catByName.set(name.toLowerCase(), existing.id);
+    }
   }
 
   // Pre-load existing SKUs to decide insert-vs-update.
   const skus = rows.map((r) => r.sku);
-  const { data: existingProducts } = await ctx.supabase
-    .from("products")
-    .select("id, sku")
-    .eq("company_id", ctx.companyId)
-    .in("sku", skus);
+  const existingProducts = await ctx.prisma.product.findMany({
+    where: { companyId: ctx.companyId, sku: { in: skus } },
+    select: { id: true, sku: true },
+  });
   const existingBySku = new Map<string, string>(
-    (existingProducts ?? []).map((p) => [p.sku, p.id])
+    existingProducts.map((p) => [p.sku, p.id])
   );
 
   let created = 0;
@@ -78,7 +86,9 @@ export const bulkImportProducts = withCompany<
   const errors: { sku: string; message: string }[] = [];
 
   for (const r of rows) {
-    const categoryId = r.categoryName ? catByName.get(r.categoryName.toLowerCase()) : undefined;
+    const categoryId = r.categoryName
+      ? catByName.get(r.categoryName.toLowerCase())
+      : undefined;
     const patch = fromProduct({
       name: r.name,
       sku: r.sku,
@@ -91,20 +101,25 @@ export const bulkImportProducts = withCompany<
       salePrice: r.salePrice,
       description: r.description,
       companyId: ctx.companyId,
-    });
+    }) as Prisma.ProductUncheckedCreateInput;
 
     const existingId = existingBySku.get(r.sku);
-    if (existingId) {
-      const { error } = await ctx.supabase
-        .from("products")
-        .update(patch)
-        .eq("id", existingId);
-      if (error) errors.push({ sku: r.sku, message: error.message });
-      else updated++;
-    } else {
-      const { error } = await ctx.supabase.from("products").insert(patch as never);
-      if (error) errors.push({ sku: r.sku, message: error.message });
-      else created++;
+    try {
+      if (existingId) {
+        await ctx.prisma.product.update({
+          where: { id: existingId },
+          data: patch,
+        });
+        updated++;
+      } else {
+        await ctx.prisma.product.create({ data: patch });
+        created++;
+      }
+    } catch (e) {
+      errors.push({
+        sku: r.sku,
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -136,35 +151,61 @@ export const getPartnerStatement = withCompany<
   StatementRow[]
 >(async (ctx, raw) => {
   const data = parseInput(statementSchema, raw);
-  if (ctx.demo) return ok([]);
 
-  const table = data.partnerType === "customer" ? "sales_orders" : "purchase_orders";
-  const partnerCol = data.partnerType === "customer" ? "customer_id" : "supplier_id";
+  const dateFilter: { gte?: Date; lte?: Date } = {};
+  if (data.from) dateFilter.gte = new Date(data.from);
+  if (data.to) dateFilter.lte = new Date(data.to);
 
-  let q = ctx.supabase
-    .from(table)
-    .select("id, order_number, order_date, total_amount, status")
-    .eq(partnerCol, data.partnerId)
-    .order("order_date");
-  if (data.from) q = q.gte("order_date", data.from);
-  if (data.to) q = q.lte("order_date", data.to);
+  let orders: {
+    orderNumber: string;
+    orderDate: Date;
+    totalAmount: Prisma.Decimal;
+    status: string;
+  }[];
 
-  const { data: orders, error } = await q;
-  if (error) throw ERR.database(error.message);
+  if (data.partnerType === "customer") {
+    orders = await ctx.prisma.salesOrder.findMany({
+      where: {
+        companyId: ctx.companyId,
+        customerId: data.partnerId,
+        ...(Object.keys(dateFilter).length ? { orderDate: dateFilter } : {}),
+      },
+      orderBy: { orderDate: "asc" },
+      select: {
+        orderNumber: true,
+        orderDate: true,
+        totalAmount: true,
+        status: true,
+      },
+    });
+  } else {
+    orders = await ctx.prisma.purchaseOrder.findMany({
+      where: {
+        companyId: ctx.companyId,
+        supplierId: data.partnerId,
+        ...(Object.keys(dateFilter).length ? { orderDate: dateFilter } : {}),
+      },
+      orderBy: { orderDate: "asc" },
+      select: {
+        orderNumber: true,
+        orderDate: true,
+        totalAmount: true,
+        status: true,
+      },
+    });
+  }
 
   let balance = 0;
   return ok(
-    (orders ?? []).map((o) => {
-      const amount = Number(o.total_amount ?? 0);
-      // Customer order: invoice = debit (we owe them nothing; they owe us)
-      // Supplier order: invoice = credit (we owe them)
+    orders.map((o) => {
+      const amount = Number(o.totalAmount ?? 0);
       const debit = data.partnerType === "customer" ? amount : 0;
       const credit = data.partnerType === "customer" ? 0 : amount;
       balance += debit - credit;
       return {
-        date: o.order_date,
-        orderNumber: o.order_number,
-        description: `${o.status} — ${o.order_number}`,
+        date: o.orderDate.toISOString().slice(0, 10),
+        orderNumber: o.orderNumber,
+        description: `${o.status} — ${o.orderNumber}`,
         debit,
         credit,
         balance,

@@ -1,12 +1,14 @@
-import type { Database } from "@/lib/supabase/database.types";
+import type { Prisma, Warehouse as PrismaWarehouse } from "@prisma/client";
 import type { Warehouse } from "@/lib/types";
 
-type WarehouseRow = Database["public"]["Tables"]["warehouses"]["Row"];
-type WarehouseInsert = Database["public"]["Tables"]["warehouses"]["Insert"];
+type WarehouseCreate = Prisma.WarehouseUncheckedCreateInput;
 
-export interface WarehouseJoinedRow extends WarehouseRow {
-  manager?: { full_name: string } | null;
-}
+/**
+ * Manager join via Prisma's `include: { manager: { select: { fullName } } }`.
+ */
+export type WarehouseJoinedRow = PrismaWarehouse & {
+  manager?: { fullName: string } | null;
+};
 
 export function toWarehouse(
   row: WarehouseJoinedRow,
@@ -16,9 +18,9 @@ export function toWarehouse(
     id: row.id,
     name: row.name,
     address: row.address ?? undefined,
-    managerId: row.manager_id ?? undefined,
-    managerName: row.manager?.full_name,
-    isActive: row.is_active,
+    managerId: row.managerId ?? undefined,
+    managerName: row.manager?.fullName,
+    isActive: row.isActive,
     totalProducts: stats?.totalProducts ?? 0,
     totalQuantity: stats?.totalQuantity ?? 0,
   };
@@ -26,12 +28,12 @@ export function toWarehouse(
 
 export function fromWarehouse(
   w: Partial<Warehouse> & { companyId?: string }
-): Partial<WarehouseInsert> {
-  const out: Partial<WarehouseInsert> = {};
-  if (w.companyId !== undefined) out.company_id = w.companyId;
+): Partial<WarehouseCreate> {
+  const out: Partial<WarehouseCreate> = {};
+  if (w.companyId !== undefined) out.companyId = w.companyId;
   if (w.name !== undefined) out.name = w.name;
   if (w.address !== undefined) out.address = w.address || null;
-  if (w.managerId !== undefined) out.manager_id = w.managerId || null;
-  if (w.isActive !== undefined) out.is_active = w.isActive;
+  if (w.managerId !== undefined) out.managerId = w.managerId || null;
+  if (w.isActive !== undefined) out.isActive = w.isActive;
   return out;
 }

@@ -1,6 +1,6 @@
 "use server";
 
-import { demoProducts, demoCategories } from "@/lib/demo-data";
+import type { Prisma } from "@prisma/client";
 import type { ProductWithStock, Category } from "@/lib/types";
 import {
   toProductWithStock,
@@ -26,52 +26,50 @@ export const getProducts = withAuth<
   { search?: string; categoryId?: string; status?: string } | undefined,
   ProductWithStock[]
 >(async (ctx, filters) => {
-  if (ctx.demo) {
-    let results = [...demoProducts];
-    if (filters?.search) {
-      const q = filters.search.toLowerCase();
-      results = results.filter(
-        (p) => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.barcode?.includes(q)
-      );
-    }
-    if (filters?.categoryId && filters.categoryId !== "all") {
-      results = results.filter((p) => p.categoryId === filters.categoryId);
-    }
-    if (filters?.status && filters.status !== "all") {
-      results = results.filter((p) => p.stockStatus === filters.status);
-    }
-    return ok(results);
-  }
-
-  let query = ctx.supabase
-    .from("product_stock_summary")
-    .select("*")
-    .order("name");
-
+  const where: Prisma.ProductStockSummaryWhereInput = {
+    companyId: ctx.companyId,
+  };
   if (filters?.search) {
-    query = query.or(`name.ilike.%${filters.search}%,sku.ilike.%${filters.search}%,barcode.ilike.%${filters.search}%`);
+    where.OR = [
+      { name: { contains: filters.search, mode: "insensitive" } },
+      { sku: { contains: filters.search, mode: "insensitive" } },
+      { barcode: { contains: filters.search, mode: "insensitive" } },
+    ];
   }
   if (filters?.categoryId && filters.categoryId !== "all") {
-    query = query.eq("category_id", filters.categoryId);
+    where.categoryId = filters.categoryId;
   }
   if (filters?.status && filters.status !== "all") {
-    query = query.eq("stock_status", filters.status);
+    where.stockStatus = filters.status;
   }
 
-  const { data, error } = await query;
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.productStockSummary.findMany({
+    where,
+    orderBy: { name: "asc" },
+  });
 
-  return ok((data ?? []).map(toProductWithStock));
+  return ok(rows.map(toProductWithStock));
 });
 
 // ============================================
 // CREATE PRODUCT
 // ============================================
+// Empty string OR a real UUID — UI sometimes passes "" when no category picked.
+const uuidOrEmpty = z
+  .string()
+  .refine(
+    (v) =>
+      v === "" ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+    { message: "Geçerli bir kategori seçin" }
+  )
+  .optional();
+
 const productInputSchema = z.object({
   name: z.string().min(1, "Ürün adı zorunlu"),
   sku: z.string().min(1, "SKU zorunlu"),
   barcode: z.string().optional(),
-  categoryId: z.string(),
+  categoryId: uuidOrEmpty,
   unit: z.string().min(1),
   minStock: z.number().nonnegative(),
   maxStock: z.number().nonnegative(),
@@ -80,31 +78,34 @@ const productInputSchema = z.object({
   description: z.string().optional(),
 });
 
-export const createProduct = withCompany<z.input<typeof productInputSchema>, void>(
-  async (ctx, raw) => {
-    const data = parseInput(productInputSchema, raw);
-    if (ctx.demo) return ok();
+export const createProduct = withCompany<
+  z.input<typeof productInputSchema>,
+  void
+>(async (ctx, raw) => {
+  const data = parseInput(productInputSchema, raw);
 
-    const insert = fromProduct({ ...data, companyId: ctx.companyId });
-    const { data: row, error } = await ctx.supabase
-      .from("products")
-      .insert(insert as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    await logAudit(ctx, {
-      action: "create",
-      table: "products",
-      recordId: row.id,
-      newData: data as unknown as Record<string, unknown>,
-    });
-    void fireWebhookEvent(ctx.companyId, "product.created", {
-      productId: row.id,
-      ...data,
-    });
-    return ok();
-  }
-);
+  const insert = fromProduct({
+    ...data,
+    companyId: ctx.companyId,
+  }) as Prisma.ProductUncheckedCreateInput;
+
+  const row = await ctx.prisma.product.create({
+    data: insert,
+    select: { id: true },
+  });
+
+  await logAudit(ctx, {
+    action: "create",
+    table: "products",
+    recordId: row.id,
+    newData: data as unknown as Record<string, unknown>,
+  });
+  void fireWebhookEvent(ctx.companyId, "product.created", {
+    productId: row.id,
+    ...data,
+  });
+  return ok();
+});
 
 // ============================================
 // UPDATE PRODUCT
@@ -116,7 +117,7 @@ const productUpdateSchema = z.object({
       name: z.string().optional(),
       sku: z.string().optional(),
       barcode: z.string().optional(),
-      categoryId: z.string().optional(),
+      categoryId: uuidOrEmpty,
       unit: z.string().optional(),
       minStock: z.number().optional(),
       maxStock: z.number().optional(),
@@ -125,53 +126,58 @@ const productUpdateSchema = z.object({
       description: z.string().optional(),
       isActive: z.boolean().optional(),
     })
-    .refine((v) => Object.keys(v).length > 0, { message: "Güncellenecek alan yok" }),
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "Güncellenecek alan yok",
+    }),
 });
 
-export const updateProduct = withCompany<z.input<typeof productUpdateSchema>, void>(
-  async (ctx, raw) => {
-    const { id, patch } = parseInput(productUpdateSchema, raw);
-    if (ctx.demo) return ok();
+export const updateProduct = withCompany<
+  z.input<typeof productUpdateSchema>,
+  void
+>(async (ctx, raw) => {
+  const { id, patch } = parseInput(productUpdateSchema, raw);
 
-    const { data: before } = await ctx.supabase
-      .from("products")
-      .select("*")
-      .eq("id", id)
-      .maybeSingle();
+  const before = await ctx.prisma.product.findFirst({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (!before) throw ERR.notFound("Ürün");
 
-    const update = fromProduct(patch);
-    const { error } = await ctx.supabase.from("products").update(update).eq("id", id);
-    if (error) throw ERR.database(error.message);
+  const update = fromProduct(patch);
+  await ctx.prisma.product.update({
+    where: { id },
+    data: update as Prisma.ProductUpdateInput,
+  });
 
-    await logAudit(ctx, {
-      action: "update",
-      table: "products",
-      recordId: id,
-      oldData: (before as Record<string, unknown>) ?? undefined,
-      newData: update as Record<string, unknown>,
-    });
-    void fireWebhookEvent(ctx.companyId, "product.updated", { productId: id, changes: patch });
-    return ok();
-  }
-);
+  await logAudit(ctx, {
+    action: "update",
+    table: "products",
+    recordId: id,
+    oldData: before as unknown as Record<string, unknown>,
+    newData: update as Record<string, unknown>,
+  });
+  void fireWebhookEvent(ctx.companyId, "product.updated", {
+    productId: id,
+    changes: patch,
+  });
+  return ok();
+});
 
 // ============================================
 // DELETE PRODUCT
 // ============================================
 export const deleteProduct = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { data: before } = await ctx.supabase
-    .from("products")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
-  const { error } = await ctx.supabase.from("products").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const before = await ctx.prisma.product.findFirst({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (!before) throw ERR.notFound("Ürün");
+
+  await ctx.prisma.product.delete({ where: { id } });
+
   await logAudit(ctx, {
     action: "delete",
     table: "products",
     recordId: id,
-    oldData: (before as Record<string, unknown>) ?? undefined,
+    oldData: before as unknown as Record<string, unknown>,
   });
   void fireWebhookEvent(ctx.companyId, "product.deleted", { productId: id });
   return ok();
@@ -181,16 +187,11 @@ export const deleteProduct = withCompany<string, void>(async (ctx, id) => {
 // GET CATEGORIES
 // ============================================
 export const getCategories = withAuth<void, Category[]>(async (ctx) => {
-  if (ctx.demo) return ok(demoCategories);
-
-  const { data, error } = await ctx.supabase
-    .from("categories")
-    .select("*")
-    .eq("is_active", true)
-    .order("sort_order");
-
-  if (error) throw ERR.database(error.message);
-  return ok((data ?? []).map(toCategory));
+  const rows = await ctx.prisma.category.findMany({
+    where: { companyId: ctx.companyId, isActive: true },
+    orderBy: { sortOrder: "asc" },
+  });
+  return ok(rows.map(toCategory));
 });
 
 // ============================================
@@ -207,17 +208,17 @@ export const createCategory = withCompany<
   { id: string }
 >(async (ctx, raw) => {
   const data = parseInput(categoryInputSchema, raw);
-  if (ctx.demo) return ok({ id: `cat-${Date.now()}` });
 
-  const insert = fromCategory({ ...data, companyId: ctx.companyId });
-  const { data: result, error } = await ctx.supabase
-    .from("categories")
-    .insert(insert as never)
-    .select("id")
-    .single();
+  const insert = fromCategory({
+    ...data,
+    companyId: ctx.companyId,
+  }) as Prisma.CategoryUncheckedCreateInput;
 
-  if (error) throw ERR.database(error.message);
-  return ok({ id: result.id });
+  const row = await ctx.prisma.category.create({
+    data: insert,
+    select: { id: true },
+  });
+  return ok({ id: row.id });
 });
 
 // ============================================
@@ -231,36 +232,50 @@ const categoryUpdateSchema = z.object({
       icon: z.string().optional(),
       color: z.string().optional(),
     })
-    .refine((v) => Object.keys(v).length > 0, { message: "Güncellenecek alan yok" }),
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "Güncellenecek alan yok",
+    }),
 });
 
-export const updateCategory = withCompany<z.input<typeof categoryUpdateSchema>, void>(
-  async (ctx, raw) => {
-    const { id, patch } = parseInput(categoryUpdateSchema, raw);
-    if (ctx.demo) return ok();
+export const updateCategory = withCompany<
+  z.input<typeof categoryUpdateSchema>,
+  void
+>(async (ctx, raw) => {
+  const { id, patch } = parseInput(categoryUpdateSchema, raw);
+  // Verify ownership before update
+  const exists = await ctx.prisma.category.findFirst({
+    where: { id, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!exists) throw ERR.notFound("Kategori");
 
-    const update = fromCategory(patch);
-    const { error } = await ctx.supabase.from("categories").update(update).eq("id", id);
-    if (error) throw ERR.database(error.message);
-    return ok();
-  }
-);
+  const update = fromCategory(patch);
+  await ctx.prisma.category.update({
+    where: { id },
+    data: update as Prisma.CategoryUpdateInput,
+  });
+  return ok();
+});
 
 // ============================================
 // DELETE CATEGORY (soft-delete: is_active = false)
 // ============================================
 export const deleteCategory = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase
-    .from("categories")
-    .update({ is_active: false })
-    .eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const exists = await ctx.prisma.category.findFirst({
+    where: { id, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!exists) throw ERR.notFound("Kategori");
+
+  await ctx.prisma.category.update({
+    where: { id },
+    data: { isActive: false },
+  });
   return ok();
 });
 
 // ============================================
-// BULK OPERATIONS (1.5)
+// BULK OPERATIONS
 // ============================================
 const bulkIdsSchema = z.object({
   ids: z.array(z.string()).min(1, "En az bir ürün seçin"),
@@ -292,17 +307,13 @@ export const bulkUpdateProducts = withCompany<
   { updated: number }
 >(async (ctx, raw) => {
   const { ids, patch } = parseInput(bulkPatchSchema, raw);
-  if (ctx.demo) return ok({ updated: ids.length });
-
   const update = fromProduct(patch);
-  const { data, error } = await ctx.supabase
-    .from("products")
-    .update(update)
-    .in("id", ids)
-    .select("id");
 
-  if (error) throw ERR.database(error.message);
-  return ok({ updated: data?.length ?? 0 });
+  const res = await ctx.prisma.product.updateMany({
+    where: { id: { in: ids }, companyId: ctx.companyId },
+    data: update as Prisma.ProductUpdateManyMutationInput,
+  });
+  return ok({ updated: res.count });
 });
 
 export const bulkDeleteProducts = withCompany<
@@ -310,16 +321,11 @@ export const bulkDeleteProducts = withCompany<
   { deleted: number }
 >(async (ctx, raw) => {
   const { ids } = parseInput(bulkIdsSchema, raw);
-  if (ctx.demo) return ok({ deleted: ids.length });
 
-  const { data, error } = await ctx.supabase
-    .from("products")
-    .delete()
-    .in("id", ids)
-    .select("id");
-
-  if (error) throw ERR.database(error.message);
-  return ok({ deleted: data?.length ?? 0 });
+  const res = await ctx.prisma.product.deleteMany({
+    where: { id: { in: ids }, companyId: ctx.companyId },
+  });
+  return ok({ deleted: res.count });
 });
 
 export const bulkPriceUpdate = withCompany<
@@ -327,30 +333,31 @@ export const bulkPriceUpdate = withCompany<
   { updated: number }
 >(async (ctx, raw) => {
   const { ids, op } = parseInput(bulkPriceSchema, raw);
-  if (ctx.demo) return ok({ updated: ids.length });
+  // Map snake_case input to camelCase Prisma field.
+  const field: "salePrice" | "purchasePrice" =
+    op.field === "purchase_price" ? "purchasePrice" : "salePrice";
 
-  const field = op.field ?? "sale_price";
-
-  // We need each row's current price to apply percent or fixed delta safely.
-  const { data: current, error: readErr } = await ctx.supabase
-    .from("products")
-    .select(`id, ${field}`)
-    .in("id", ids);
-
-  if (readErr) throw ERR.database(readErr.message);
+  // Read current values (company-scoped) then write updated ones in a tx.
+  const current = await ctx.prisma.product.findMany({
+    where: { id: { in: ids }, companyId: ctx.companyId },
+    select: { id: true, [field]: true } as Prisma.ProductSelect,
+  });
 
   let updated = 0;
-  for (const row of current ?? []) {
-    const r = row as unknown as Record<string, number>;
-    const base = Number(r[field] ?? 0);
-    const next = op.type === "percent" ? base * (1 + op.value / 100) : base + op.value;
-    const rounded = Math.max(0, Math.round(next * 100) / 100);
-    const { error } = await ctx.supabase
-      .from("products")
-      .update({ [field]: rounded })
-      .eq("id", r.id);
-    if (!error) updated++;
-  }
+  await ctx.prisma.$transaction(async (tx) => {
+    for (const row of current) {
+      const baseRaw = (row as unknown as Record<string, unknown>)[field];
+      const base = typeof baseRaw === "number" ? baseRaw : Number(baseRaw ?? 0);
+      const next =
+        op.type === "percent" ? base * (1 + op.value / 100) : base + op.value;
+      const rounded = Math.max(0, Math.round(next * 100) / 100);
+      const res = await tx.product.updateMany({
+        where: { id: row.id, companyId: ctx.companyId },
+        data: { [field]: rounded } as Prisma.ProductUpdateManyMutationInput,
+      });
+      updated += res.count;
+    }
+  });
   return ok({ updated });
 });
 
@@ -364,39 +371,26 @@ export interface BarcodeLookupResult {
 
 export const lookupBarcode = withAuth<string, BarcodeLookupResult>(
   async (ctx, code) => {
-    if (ctx.demo) {
-      const product = demoProducts.find(
-        (p) => p.barcode === code || p.sku === code.toUpperCase()
-      );
-      if (!product) return ok({ found: false });
-      return ok({
-        found: true,
-        product: {
-          name: product.name,
-          sku: product.sku,
-          currentStock: product.currentStock,
-          unit: product.unit,
-        },
-      });
-    }
+    const row = await ctx.prisma.productStockSummary.findFirst({
+      where: {
+        companyId: ctx.companyId,
+        OR: [
+          { barcode: code },
+          { sku: { equals: code, mode: "insensitive" } },
+        ],
+      },
+      select: { name: true, sku: true, currentStock: true, unit: true },
+    });
 
-    const { data } = await ctx.supabase
-      .from("product_stock_summary")
-      .select("name, sku, current_stock, unit")
-      .or(`barcode.eq.${code},sku.ilike.${code}`)
-      .limit(1)
-      .single();
-
-    if (!data) return ok({ found: false });
+    if (!row) return ok({ found: false });
     return ok({
       found: true,
       product: {
-        name: data.name,
-        sku: data.sku,
-        currentStock: data.current_stock,
-        unit: data.unit,
+        name: row.name,
+        sku: row.sku,
+        currentStock: Number(row.currentStock),
+        unit: row.unit,
       },
     });
   }
 );
-

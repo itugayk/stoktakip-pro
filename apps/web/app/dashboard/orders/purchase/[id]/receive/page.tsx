@@ -11,19 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { PageHeader, EmptyState } from "@/components/shared";
-import { receivePurchaseOrder } from "@/lib/actions";
-import { createClient } from "@/lib/supabase/client";
+import {
+  receivePurchaseOrder,
+  getPurchaseOrderForReceiving,
+} from "@/lib/actions/orders";
 import { scanDetector } from "@/lib/scan-detector";
 import { feedback } from "@/lib/feedback";
-
-interface POLineRaw {
-  id: string;
-  product_id: string;
-  quantity: number;
-  received_quantity: number;
-  unit_price: number;
-  product?: { name: string; sku: string; barcode?: string | null } | { name: string; sku: string; barcode?: string | null }[] | null;
-}
 
 interface OrderLine {
   itemId: string;
@@ -53,34 +46,22 @@ export default function ReceivePurchaseOrderPage() {
 
   useEffect(() => {
     async function load() {
-      const supabase = createClient();
-      const { data: order } = await supabase
-        .from("purchase_orders")
-        .select("order_number")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (order) setOrderNumber(order.order_number);
-
-      const { data: items } = await supabase
-        .from("purchase_order_items")
-        .select(`
-          id, product_id, quantity, received_quantity, unit_price,
-          product:products(name, sku, barcode)
-        `)
-        .eq("order_id", orderId);
-
-      const rows = (items as POLineRaw[] | null)?.map((it): OrderLine => {
-        const productRaw = it.product;
-        const product = Array.isArray(productRaw) ? productRaw[0] : productRaw;
-        const remaining = Number(it.quantity) - Number(it.received_quantity ?? 0);
+      const res = await getPurchaseOrderForReceiving(orderId);
+      if (!res.ok || !res.data) {
+        setLoading(false);
+        return;
+      }
+      setOrderNumber(res.data.orderNumber);
+      const rows = res.data.lines.map<OrderLine>((it) => {
+        const remaining = it.ordered - it.alreadyReceived;
         return {
-          itemId: it.id,
-          productId: it.product_id,
-          name: product?.name ?? "Bilinmeyen",
-          sku: product?.sku ?? "",
-          barcode: product?.barcode ?? undefined,
-          ordered: Number(it.quantity),
-          alreadyReceived: Number(it.received_quantity ?? 0),
+          itemId: it.itemId,
+          productId: it.productId,
+          name: it.productName,
+          sku: it.productSku,
+          barcode: it.productBarcode,
+          ordered: it.ordered,
+          alreadyReceived: it.alreadyReceived,
           remaining,
           receiving: Math.max(0, remaining),
           lotNumber: "",
@@ -88,7 +69,7 @@ export default function ReceivePurchaseOrderPage() {
           rejected: 0,
           rejectionReason: "",
         };
-      }) ?? [];
+      });
       setLines(rows);
       setLoading(false);
     }

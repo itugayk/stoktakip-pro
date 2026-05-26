@@ -1,11 +1,11 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import bcrypt from "bcryptjs";
+import { auth, signIn as nextAuthSignIn, signOut as nextAuthSignOut } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { ok, fail, parseInput, z, type Result } from "@/lib/server";
-
-const DEMO_MODE = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
 
 // ============================================
 // SIGN IN
@@ -17,7 +17,7 @@ const signInSchema = z.object({
 
 export async function signIn(
   formData: z.input<typeof signInSchema>
-): Promise<Result<{ demo?: boolean }>> {
+): Promise<Result<{ ok: true }>> {
   let data: z.infer<typeof signInSchema>;
   try {
     data = parseInput(signInSchema, formData);
@@ -26,29 +26,23 @@ export async function signIn(
     return fail(err.code, err.message, err.field);
   }
 
-  if (DEMO_MODE) {
-    if (data.email === "demo@demo.com" && data.password === "demo") {
-      return ok({ demo: true });
+  try {
+    await nextAuthSignIn("credentials", {
+      email: data.email,
+      password: data.password,
+      redirect: false,
+    });
+  } catch (e) {
+    // NextAuth throws CredentialsSignin on bad creds (its only structured error here)
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("CredentialsSignin") || msg.includes("credentials")) {
+      return fail("invalid_credentials", "E-posta veya şifre hatalı");
     }
-    return fail("invalid_credentials", "Hatalı e-posta veya şifre");
-  }
-
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({
-    email: data.email,
-    password: data.password,
-  });
-
-  if (error) {
-    const msg =
-      error.message === "Invalid login credentials"
-        ? "E-posta veya şifre hatalı"
-        : error.message;
-    return fail("invalid_credentials", msg);
+    return fail("invalid_credentials", "E-posta veya şifre hatalı");
   }
 
   revalidatePath("/", "layout");
-  return ok({});
+  return ok({ ok: true });
 }
 
 // ============================================
@@ -58,12 +52,12 @@ const signUpSchema = z.object({
   email: z.string().email("Geçerli bir e-posta girin"),
   password: z.string().min(6, "Şifre en az 6 karakter olmalı"),
   fullName: z.string().min(1, "Ad soyad zorunlu"),
-  companyName: z.string().optional(),
+  companyName: z.string().min(1, "Şirket adı zorunlu"),
 });
 
 export async function signUp(
   formData: z.input<typeof signUpSchema>
-): Promise<Result<{ demo?: boolean; needsConfirmation?: boolean }>> {
+): Promise<Result<{ ok: true }>> {
   let data: z.infer<typeof signUpSchema>;
   try {
     data = parseInput(signUpSchema, formData);
@@ -72,60 +66,74 @@ export async function signUp(
     return fail(err.code, err.message, err.field);
   }
 
-  if (DEMO_MODE) return ok({ demo: true });
-
-  const supabase = await createClient();
-
-  let companyId: string | undefined;
-  if (data.companyName) {
-    const { data: company, error: companyError } = await supabase
-      .from("companies")
-      .insert({
-        name: data.companyName,
-        slug: data.companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
-      })
-      .select("id")
-      .single();
-
-    if (companyError) {
-      return fail("database", "Şirket oluşturulamadı: " + companyError.message);
-    }
-    companyId = company.id;
+  const email = data.email.toLowerCase().trim();
+  const existing = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true },
+  });
+  if (existing) {
+    return fail("email_taken", "Bu e-posta adresi zaten kayıtlı", "email");
   }
 
-  const { error } = await supabase.auth.signUp({
-    email: data.email,
-    password: data.password,
-    options: {
-      data: {
-        full_name: data.fullName,
-        company_id: companyId,
-        role: "admin",
-      },
-    },
-  });
+  const passwordHash = await bcrypt.hash(data.password, 12);
+  const slug = slugify(data.companyName);
 
-  if (error) {
-    if (error.message.includes("already registered")) {
-      return fail("email_taken", "Bu e-posta adresi zaten kayıtlı", "email");
+  try {
+    await prisma.$transaction(async (tx) => {
+      const company = await tx.company.create({
+        data: {
+          name: data.companyName,
+          slug,
+          subscriptionPlan: "free",
+          isActive: true,
+        },
+        select: { id: true },
+      });
+
+      await tx.user.create({
+        data: {
+          email,
+          passwordHash,
+          fullName: data.fullName,
+          role: "admin",
+          companyId: company.id,
+          isActive: true,
+        },
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("Unique constraint")) {
+      if (msg.includes("companies_slug_key")) {
+        return fail("company_taken", "Bu şirket adı zaten kullanılıyor", "companyName");
+      }
+      if (msg.includes("users_email_key")) {
+        return fail("email_taken", "Bu e-posta adresi zaten kayıtlı", "email");
+      }
     }
-    return fail("signup_failed", error.message);
+    return fail("signup_failed", "Kayıt sırasında bir hata oluştu: " + msg);
+  }
+
+  // Auto sign-in after signup
+  try {
+    await nextAuthSignIn("credentials", {
+      email,
+      password: data.password,
+      redirect: false,
+    });
+  } catch {
+    // If auto sign-in fails, user can still log in manually
   }
 
   revalidatePath("/", "layout");
-  return ok({ needsConfirmation: false });
+  return ok({ ok: true });
 }
 
 // ============================================
 // SIGN OUT
 // ============================================
 export async function signOut() {
-  if (DEMO_MODE) {
-    redirect("/login");
-  }
-
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  await nextAuthSignOut({ redirect: false });
   revalidatePath("/", "layout");
   redirect("/login");
 }
@@ -143,35 +151,47 @@ export interface CurrentUser {
 }
 
 export async function getCurrentUser(): Promise<CurrentUser | null> {
-  if (DEMO_MODE) {
-    return {
-      id: "demo-user",
-      email: "admin@stoktakip.com",
-      fullName: "Demo Admin",
-      role: "admin",
-      company: { id: "demo-company", name: "Demo Şirketi A.Ş." },
-    };
-  }
+  const session = await auth();
+  if (!session?.user?.id) return null;
 
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  // Pull fresh profile + company in one round-trip.
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      id: true,
+      email: true,
+      fullName: true,
+      role: true,
+      avatarUrl: true,
+      company: { select: { id: true, name: true } },
+    },
+  });
   if (!user) return null;
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("*, company:companies(id, name)")
-    .eq("id", user.id)
-    .single();
-
-  if (!profile) return null;
-
-  const company = profile.company as { id: string; name: string };
   return {
     id: user.id,
-    email: user.email ?? "",
-    fullName: profile.full_name,
-    role: profile.role as CurrentUser["role"],
-    avatarUrl: profile.avatar_url ?? undefined,
-    company: { id: company.id, name: company.name },
+    email: user.email,
+    fullName: user.fullName,
+    role: user.role,
+    avatarUrl: user.avatarUrl ?? undefined,
+    company: { id: user.company.id, name: user.company.name },
   };
+}
+
+// ============================================
+// Helpers
+// ============================================
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/ı/g, "i")
+    .replace(/ğ/g, "g")
+    .replace(/ş/g, "s")
+    .replace(/ç/g, "c")
+    .replace(/ö/g, "o")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }

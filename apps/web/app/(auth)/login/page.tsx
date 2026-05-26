@@ -15,25 +15,14 @@ export default function LoginPage() {
   const t = useTranslations("auth");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState("demo@demo.com");
-  const [password, setPassword] = useState("demo");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      const cleanEmail = email.trim().toLowerCase();
-      const cleanPassword = password.trim();
-
-      if (cleanEmail === "demo@demo.com" && cleanPassword === "demo") {
-        toast.success("Giriş başarılı!", {
-          description: "Dashboard'a yönlendiriliyorsunuz...",
-        });
-        window.location.href = "/dashboard";
-        return;
-      }
-
       const result = await signIn({ email, password });
 
       if (result.ok) {
@@ -154,14 +143,6 @@ export default function LoginPage() {
             </Link>
           </div>
 
-          {/* Demo hint */}
-          <div className="w-full rounded-lg border border-dashed border-primary/30 bg-primary/5 p-3 text-center">
-            <p className="text-xs text-muted-foreground">
-              🚀 <strong>Demo Modu:</strong> Giriş için şu bilgileri kullanın:<br/>
-              <strong>E-posta:</strong> demo@demo.com <br/>
-              <strong>Şifre:</strong> demo
-            </p>
-          </div>
         </CardFooter>
       </Card>
     </div>

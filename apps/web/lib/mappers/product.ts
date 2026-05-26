@@ -1,69 +1,80 @@
-import type { Database } from "@/lib/supabase/database.types";
+import type { Prisma, Product as PrismaProduct } from "@prisma/client";
 import type { Product, ProductWithStock } from "@/lib/types";
 
-type ProductRow = Database["public"]["Tables"]["products"]["Row"];
-type ProductInsert = Database["public"]["Tables"]["products"]["Insert"];
-type ProductSummaryRow = Database["public"]["Views"]["product_stock_summary"]["Row"];
+type ProductCreate = Prisma.ProductUncheckedCreateInput;
 
-export function toProduct(row: ProductRow): Product {
+/**
+ * Joined view row from product_stock_summary.
+ * Defined inline because Prisma's `view` block emits a model type for it.
+ */
+type ProductSummaryRow = Prisma.ProductStockSummaryGetPayload<Record<string, never>>;
+
+const d = (v: Prisma.Decimal | number | string): number =>
+  typeof v === "number" ? v : Number(v);
+
+const iso = (d: Date | string): string =>
+  typeof d === "string" ? d : d.toISOString();
+
+export function toProduct(row: PrismaProduct): Product {
   return {
     id: row.id,
     name: row.name,
     sku: row.sku,
     barcode: row.barcode ?? undefined,
     description: row.description ?? undefined,
-    categoryId: row.category_id ?? "",
+    categoryId: row.categoryId ?? "",
     unit: row.unit,
-    minStock: row.min_stock,
-    maxStock: row.max_stock,
-    purchasePrice: row.purchase_price,
-    salePrice: row.sale_price,
-    imageUrl: row.image_url ?? undefined,
-    isActive: row.is_active,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    minStock: d(row.minStock),
+    maxStock: d(row.maxStock),
+    purchasePrice: d(row.purchasePrice),
+    salePrice: d(row.salePrice),
+    imageUrl: row.imageUrl ?? undefined,
+    isActive: row.isActive,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
   };
 }
 
 export function fromProduct(
   p: Partial<Product> & { companyId?: string }
-): Partial<ProductInsert> {
-  const out: Partial<ProductInsert> = {};
-  if (p.companyId !== undefined) out.company_id = p.companyId;
+): Partial<ProductCreate> {
+  const out: Partial<ProductCreate> = {};
+  if (p.companyId !== undefined) out.companyId = p.companyId;
   if (p.name !== undefined) out.name = p.name;
   if (p.sku !== undefined) out.sku = p.sku;
   if (p.barcode !== undefined) out.barcode = p.barcode || null;
   if (p.description !== undefined) out.description = p.description || null;
-  if (p.categoryId !== undefined) out.category_id = p.categoryId || null;
+  if (p.categoryId !== undefined) out.categoryId = p.categoryId || null;
   if (p.unit !== undefined) out.unit = p.unit;
-  if (p.minStock !== undefined) out.min_stock = p.minStock;
-  if (p.maxStock !== undefined) out.max_stock = p.maxStock;
-  if (p.purchasePrice !== undefined) out.purchase_price = p.purchasePrice;
-  if (p.salePrice !== undefined) out.sale_price = p.salePrice;
-  if (p.imageUrl !== undefined) out.image_url = p.imageUrl || null;
-  if (p.isActive !== undefined) out.is_active = p.isActive;
+  if (p.minStock !== undefined) out.minStock = p.minStock;
+  if (p.maxStock !== undefined) out.maxStock = p.maxStock;
+  if (p.purchasePrice !== undefined) out.purchasePrice = p.purchasePrice;
+  if (p.salePrice !== undefined) out.salePrice = p.salePrice;
+  if (p.imageUrl !== undefined) out.imageUrl = p.imageUrl || null;
+  if (p.isActive !== undefined) out.isActive = p.isActive;
   return out;
 }
 
 export function toProductWithStock(row: ProductSummaryRow): ProductWithStock {
-  const status = row.stock_status === "out_of_stock" ? "critical" : row.stock_status;
+  const status =
+    row.stockStatus === "out_of_stock" ? "critical" : (row.stockStatus as ProductWithStock["stockStatus"]);
   return {
-    id: row.product_id,
+    id: row.productId,
     name: row.name,
     sku: row.sku,
     barcode: row.barcode ?? undefined,
     description: undefined,
-    categoryId: row.category_id ?? "",
+    categoryId: row.categoryId ?? "",
     unit: row.unit,
-    minStock: row.min_stock,
-    maxStock: row.max_stock,
-    purchasePrice: row.purchase_price,
-    salePrice: row.sale_price,
-    isActive: row.is_active,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    currentStock: row.current_stock,
-    categoryName: row.category_name ?? "",
+    minStock: d(row.minStock),
+    maxStock: d(row.maxStock),
+    purchasePrice: d(row.purchasePrice),
+    salePrice: d(row.salePrice),
+    isActive: row.isActive,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+    currentStock: d(row.currentStock),
+    categoryName: row.categoryName ?? "",
     stockStatus: status,
   };
 }

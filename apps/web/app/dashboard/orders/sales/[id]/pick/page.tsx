@@ -10,8 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { PageHeader, EmptyState } from "@/components/shared";
-import { recordPick } from "@/lib/actions";
-import { createClient } from "@/lib/supabase/client";
+import { recordPick, getSalesOrderForPicking } from "@/lib/actions/orders";
 import { scanDetector } from "@/lib/scan-detector";
 import { feedback } from "@/lib/feedback";
 
@@ -38,43 +37,21 @@ export default function PickSalesOrderPage() {
 
   useEffect(() => {
     async function load() {
-      const supabase = createClient();
-      const { data: order } = await supabase
-        .from("sales_orders")
-        .select("order_number, warehouse_id")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (order) setOrderNumber(order.order_number);
-
-      const { data: items } = await supabase
-        .from("sales_order_items")
-        .select(`
-          id, product_id, quantity, picked_qty,
-          product:products(name, sku, barcode)
-        `)
-        .eq("order_id", orderId);
-
-      const rows: PickLine[] = ((items as unknown as {
-        id: string;
-        product_id: string;
-        quantity: number;
-        picked_qty?: number;
-        product?: { name: string; sku: string; barcode?: string | null } | { name: string; sku: string; barcode?: string | null }[] | null;
-      }[]) ?? []).map((it) => {
-        const productRaw = it.product;
-        const product = Array.isArray(productRaw) ? productRaw[0] : productRaw;
-        return {
-          itemId: it.id,
-          productId: it.product_id,
-          name: product?.name ?? "Bilinmeyen",
-          sku: product?.sku ?? "",
-          barcode: product?.barcode ?? undefined,
-          needed: Number(it.quantity),
-          picked: Number(it.picked_qty ?? 0),
-        };
-      });
-
-      // Sort by location alphabetically when available (FEFO-like for pick path).
+      const res = await getSalesOrderForPicking(orderId);
+      if (!res.ok || !res.data) {
+        setLoading(false);
+        return;
+      }
+      setOrderNumber(res.data.orderNumber);
+      const rows: PickLine[] = res.data.lines.map((it) => ({
+        itemId: it.itemId,
+        productId: it.productId,
+        name: it.productName,
+        sku: it.productSku,
+        barcode: it.productBarcode,
+        needed: it.ordered,
+        picked: it.alreadyPicked,
+      }));
       rows.sort((a, b) => (a.location ?? "").localeCompare(b.location ?? ""));
       setLines(rows);
       setLoading(false);

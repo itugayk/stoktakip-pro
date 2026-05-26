@@ -1,41 +1,51 @@
-import type { Database } from "@/lib/supabase/database.types";
+import type { Prisma, StockMovement as PrismaStockMovement } from "@prisma/client";
 import type { StockMovement, MovementType } from "@/lib/types";
 
-type MovementRow = Database["public"]["Tables"]["stock_movements"]["Row"];
-type MovementInsert = Database["public"]["Tables"]["stock_movements"]["Insert"];
+type MovementCreate = Prisma.StockMovementUncheckedCreateInput;
 
 /**
- * Joined row shape used by getStockMovements queries.
- * Supabase returns related rows as nested objects keyed by alias.
+ * Joined row shape used by getStockMovements queries via Prisma `include`.
  */
-export interface MovementJoinedRow extends MovementRow {
+export type MovementJoinedRow = PrismaStockMovement & {
   product?: { name: string; sku: string } | null;
-  from_warehouse?: { name: string } | null;
-  to_warehouse?: { name: string } | null;
-  user?: { full_name: string } | null;
-}
+  fromWarehouse?: { name: string } | null;
+  toWarehouse?: { name: string } | null;
+  user?: { fullName: string } | null;
+};
+
+const d = (v: Prisma.Decimal | number | string): number =>
+  typeof v === "number" ? v : Number(v);
+
+const iso = (v: Date | string): string =>
+  typeof v === "string" ? v : v.toISOString();
+
+const isoDate = (v: Date | string | null | undefined): string | undefined => {
+  if (!v) return undefined;
+  if (typeof v === "string") return v;
+  return v.toISOString().slice(0, 10);
+};
 
 export function toStockMovement(row: MovementJoinedRow): StockMovement {
-  const fromWh = row.from_warehouse;
-  const toWh = row.to_warehouse;
+  const fromWh = row.fromWarehouse;
+  const toWh = row.toWarehouse;
   return {
     id: row.id,
-    productId: row.product_id,
+    productId: row.productId,
     productName: row.product?.name ?? "",
     productSku: row.product?.sku ?? "",
-    type: row.movement_type as MovementType,
-    quantity: row.quantity,
-    warehouseId: row.from_warehouse_id ?? row.to_warehouse_id ?? "",
+    type: row.movementType as MovementType,
+    quantity: d(row.quantity),
+    warehouseId: row.fromWarehouseId ?? row.toWarehouseId ?? "",
     warehouseName: fromWh?.name ?? toWh?.name ?? "",
-    toWarehouseId: row.to_warehouse_id ?? undefined,
+    toWarehouseId: row.toWarehouseId ?? undefined,
     toWarehouseName: toWh?.name,
-    lotNumber: row.lot_number ?? undefined,
-    expiryDate: row.expiry_date ?? undefined,
+    lotNumber: row.lotNumber ?? undefined,
+    expiryDate: isoDate(row.expiryDate),
     reason: row.reason ?? undefined,
-    reference: row.reference_number ?? undefined,
-    userId: row.user_id,
-    userName: row.user?.full_name ?? "",
-    createdAt: row.created_at,
+    reference: row.referenceNumber ?? undefined,
+    userId: row.userId,
+    userName: row.user?.fullName ?? "",
+    createdAt: iso(row.createdAt),
   };
 }
 
@@ -47,21 +57,21 @@ export function fromStockMovement(
     unitCost?: number;
     notes?: string;
   }
-): Partial<MovementInsert> {
-  const out: Partial<MovementInsert> = {};
-  if (m.companyId !== undefined) out.company_id = m.companyId;
-  if (m.productId !== undefined) out.product_id = m.productId;
-  if (m.type !== undefined) out.movement_type = m.type;
+): Partial<MovementCreate> {
+  const out: Partial<MovementCreate> = {};
+  if (m.companyId !== undefined) out.companyId = m.companyId;
+  if (m.productId !== undefined) out.productId = m.productId;
+  if (m.type !== undefined) out.movementType = m.type;
   if (m.quantity !== undefined) out.quantity = m.quantity;
-  if (m.fromWarehouseId !== undefined) out.from_warehouse_id = m.fromWarehouseId || null;
-  if (m.toWarehouseId !== undefined) out.to_warehouse_id = m.toWarehouseId || null;
-  if (m.lotNumber !== undefined) out.lot_number = m.lotNumber || null;
-  if (m.expiryDate !== undefined) out.expiry_date = m.expiryDate || null;
-  if (m.unitCost !== undefined) out.unit_cost = m.unitCost;
+  if (m.fromWarehouseId !== undefined) out.fromWarehouseId = m.fromWarehouseId || null;
+  if (m.toWarehouseId !== undefined) out.toWarehouseId = m.toWarehouseId || null;
+  if (m.lotNumber !== undefined) out.lotNumber = m.lotNumber || null;
+  if (m.expiryDate !== undefined) out.expiryDate = m.expiryDate || null;
+  if (m.unitCost !== undefined) out.unitCost = m.unitCost;
   if (m.reason !== undefined) out.reason = m.reason || null;
-  if (m.reference !== undefined) out.reference_number = m.reference || null;
-  if (m.referenceType !== undefined) out.reference_type = m.referenceType;
+  if (m.reference !== undefined) out.referenceNumber = m.reference || null;
+  if (m.referenceType !== undefined) out.referenceType = m.referenceType;
   if (m.notes !== undefined) out.notes = m.notes;
-  if (m.userId !== undefined) out.user_id = m.userId;
+  if (m.userId !== undefined) out.userId = m.userId;
   return out;
 }

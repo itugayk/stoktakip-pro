@@ -34,85 +34,91 @@ const upsertSchema = z.object({
 });
 
 export const listWebhooks = withCompany<void, Webhook[]>(async (ctx) => {
-  if (ctx.demo) return ok([]);
-  const { data, error } = await ctx.supabase
-    .from("webhooks")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.webhook.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { createdAt: "desc" },
+  });
+
   return ok(
-    (data ?? []).map((r) => ({
+    rows.map((r) => ({
       id: r.id,
       name: r.name,
       url: r.url,
       events: r.events,
-      isActive: r.is_active,
+      isActive: r.isActive,
       secret: r.secret,
-      createdAt: r.created_at,
+      createdAt: r.createdAt.toISOString(),
     }))
   );
 });
 
-export const upsertWebhook = withRole<z.input<typeof upsertSchema>, { id: string }>(
-  ["admin"],
-  async (ctx, raw) => {
-    const data = parseInput(upsertSchema, raw);
-    if (ctx.demo) return ok({ id: data.id ?? `wh-${Date.now()}` });
+export const upsertWebhook = withRole<
+  z.input<typeof upsertSchema>,
+  { id: string }
+>(["admin"], async (ctx, raw) => {
+  const data = parseInput(upsertSchema, raw);
 
-    const payload = {
+  if (data.id) {
+    const exists = await ctx.prisma.webhook.findFirst({
+      where: { id: data.id, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!exists) throw ERR.notFound("Webhook");
+
+    await ctx.prisma.webhook.update({
+      where: { id: data.id },
+      data: {
+        name: data.name,
+        url: data.url,
+        events: data.events,
+        isActive: data.isActive,
+      },
+    });
+    return ok({ id: data.id });
+  }
+
+  const row = await ctx.prisma.webhook.create({
+    data: {
+      companyId: ctx.companyId,
       name: data.name,
       url: data.url,
       events: data.events,
-      is_active: data.isActive,
-    };
-
-    if (data.id) {
-      const { error } = await ctx.supabase.from("webhooks").update(payload).eq("id", data.id);
-      if (error) throw ERR.database(error.message);
-      return ok({ id: data.id });
-    }
-    const { data: row, error } = await ctx.supabase
-      .from("webhooks")
-      .insert({
-        ...payload,
-        company_id: ctx.companyId,
-        secret: randomSecret(),
-        created_by: ctx.userId,
-      } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-    return ok({ id: row.id });
-  }
-);
+      isActive: data.isActive,
+      secret: randomSecret(),
+      createdById: ctx.userId,
+    },
+    select: { id: true },
+  });
+  return ok({ id: row.id });
+});
 
 export const deleteWebhook = withRole<string, void>(["admin"], async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("webhooks").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.webhook.deleteMany({
+    where: { id, companyId: ctx.companyId },
+  });
+  if (res.count === 0) throw ERR.notFound("Webhook");
   return ok();
 });
 
-export const listWebhookDeliveries = withCompany<string, WebhookDelivery[]>(async (ctx, webhookId) => {
-  if (ctx.demo) return ok([]);
-  const { data, error } = await ctx.supabase
-    .from("webhook_deliveries")
-    .select("id, event, status_code, success, attempt, duration_ms, error, created_at")
-    .eq("webhook_id", webhookId)
-    .order("created_at", { ascending: false })
-    .limit(50);
-  if (error) throw ERR.database(error.message);
-  return ok(
-    (data ?? []).map((r) => ({
-      id: r.id,
-      event: r.event,
-      statusCode: r.status_code ?? undefined,
-      success: r.success,
-      attempt: r.attempt,
-      durationMs: r.duration_ms ?? undefined,
-      error: r.error ?? undefined,
-      createdAt: r.created_at,
-    }))
-  );
-});
+export const listWebhookDeliveries = withCompany<string, WebhookDelivery[]>(
+  async (ctx, webhookId) => {
+    const rows = await ctx.prisma.webhookDelivery.findMany({
+      where: { webhookId, companyId: ctx.companyId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
 
+    return ok(
+      rows.map((r) => ({
+        id: r.id,
+        event: r.event,
+        statusCode: r.statusCode ?? undefined,
+        success: r.success,
+        attempt: r.attempt,
+        durationMs: r.durationMs ?? undefined,
+        error: r.error ?? undefined,
+        createdAt: r.createdAt.toISOString(),
+      }))
+    );
+  }
+);

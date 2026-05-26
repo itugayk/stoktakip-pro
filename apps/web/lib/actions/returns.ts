@@ -1,9 +1,23 @@
 "use server";
 
-import { withAuth, withRole, ok, fail, parseInput, z, ERR, logAudit } from "@/lib/server";
+import {
+  withAuth,
+  withRole,
+  ok,
+  fail,
+  parseInput,
+  z,
+  ERR,
+  logAudit,
+} from "@/lib/server";
 
 export type ReturnType = "customer" | "supplier";
-export type ReturnStatus = "pending" | "approved" | "received" | "rejected" | "cancelled";
+export type ReturnStatus =
+  | "pending"
+  | "approved"
+  | "received"
+  | "rejected"
+  | "cancelled";
 export type ReturnItemCondition = "resellable" | "damaged" | "scrap";
 
 export interface Return {
@@ -49,112 +63,97 @@ const createSchema = z.object({
     .min(1, "En az bir kalem"),
 });
 
-export const createReturn = withAuth<z.input<typeof createSchema>, { returnId: string }>(
-  async (ctx, raw) => {
-    const data = parseInput(createSchema, raw);
-    if (ctx.demo) return ok({ returnId: `ret-${Date.now()}` });
+export const createReturn = withAuth<
+  z.input<typeof createSchema>,
+  { returnId: string }
+>(async (ctx, raw) => {
+  const data = parseInput(createSchema, raw);
 
-    if (data.type === "customer" && !data.customerId) {
-      return fail("validation", "Müşteri iadesi için müşteri seçin", "customerId");
-    }
-    if (data.type === "supplier" && !data.supplierId) {
-      return fail("validation", "Tedarikçi iadesi için tedarikçi seçin", "supplierId");
-    }
-
-    const { data: ret, error } = await ctx.supabase
-      .from("returns")
-      .insert({
-        company_id: ctx.companyId,
-        type: data.type,
-        warehouse_id: data.warehouseId,
-        customer_id: data.customerId ?? null,
-        supplier_id: data.supplierId ?? null,
-        related_order_id: data.relatedOrderId ?? null,
-        reason: data.reason ?? null,
-        notes: data.notes ?? null,
-        created_by: ctx.userId,
-      } as never)
-      .select("id")
-      .single();
-    if (error) throw ERR.database(error.message);
-
-    const itemRows = data.items.map((it) => ({
-      return_id: ret.id,
-      product_id: it.productId,
-      quantity: it.quantity,
-      condition: it.condition,
-      lot_number: it.lotNumber ?? null,
-      unit_value: it.unitValue ?? null,
-    }));
-    const { error: itemErr } = await ctx.supabase
-      .from("return_items")
-      .insert(itemRows as never);
-    if (itemErr) throw ERR.database(itemErr.message);
-
-    await logAudit(ctx, {
-      action: "create",
-      table: "returns",
-      recordId: ret.id,
-      newData: data as unknown as Record<string, unknown>,
-    });
-    return ok({ returnId: ret.id });
+  if (data.type === "customer" && !data.customerId) {
+    return fail("validation", "Müşteri iadesi için müşteri seçin", "customerId");
   }
-);
-
-export const listReturns = withAuth<{ status?: ReturnStatus } | undefined, Return[]>(
-  async (ctx, filter) => {
-    if (ctx.demo) return ok([]);
-
-    let q = ctx.supabase
-      .from("returns")
-      .select(`
-        id, type, status, warehouse_id, customer_id, supplier_id,
-        related_order_id, reason, notes, created_at,
-        items:return_items(id, product_id, quantity, condition, lot_number, unit_value, product:products(name))
-      `)
-      .order("created_at", { ascending: false });
-    if (filter?.status) q = q.eq("status", filter.status);
-
-    const { data, error } = await q;
-    if (error) throw ERR.database(error.message);
-
-    return ok(
-      (data ?? []).map((r) => ({
-        id: r.id,
-        type: r.type as ReturnType,
-        status: r.status as ReturnStatus,
-        warehouseId: r.warehouse_id,
-        customerId: r.customer_id ?? undefined,
-        supplierId: r.supplier_id ?? undefined,
-        relatedOrderId: r.related_order_id ?? undefined,
-        reason: r.reason ?? undefined,
-        notes: r.notes ?? undefined,
-        createdAt: r.created_at,
-        items: ((r.items as unknown as {
-          id: string;
-          product_id: string;
-          quantity: number;
-          condition: ReturnItemCondition;
-          lot_number?: string | null;
-          unit_value?: number | null;
-          product?: { name: string } | { name: string }[] | null;
-        }[]) ?? []).map((it) => {
-          const productRaw = it.product;
-          const product = Array.isArray(productRaw) ? productRaw[0] : productRaw;
-          return {
-            id: it.id,
-            productId: it.product_id,
-            productName: product?.name,
-            quantity: Number(it.quantity),
-            condition: it.condition,
-            lotNumber: it.lot_number ?? undefined,
-            unitValue: it.unit_value != null ? Number(it.unit_value) : undefined,
-          };
-        }),
-      }))
+  if (data.type === "supplier" && !data.supplierId) {
+    return fail(
+      "validation",
+      "Tedarikçi iadesi için tedarikçi seçin",
+      "supplierId"
     );
   }
-);
+
+  const ret = await ctx.prisma.return.create({
+    data: {
+      companyId: ctx.companyId,
+      type: data.type,
+      warehouseId: data.warehouseId,
+      customerId: data.customerId ?? null,
+      supplierId: data.supplierId ?? null,
+      relatedOrderId: data.relatedOrderId ?? null,
+      reason: data.reason ?? null,
+      notes: data.notes ?? null,
+      createdById: ctx.userId,
+      items: {
+        create: data.items.map((it) => ({
+          productId: it.productId,
+          quantity: it.quantity,
+          condition: it.condition,
+          lotNumber: it.lotNumber ?? null,
+          unitValue: it.unitValue ?? null,
+        })),
+      },
+    },
+    select: { id: true },
+  });
+
+  await logAudit(ctx, {
+    action: "create",
+    table: "returns",
+    recordId: ret.id,
+    newData: data as unknown as Record<string, unknown>,
+  });
+  return ok({ returnId: ret.id });
+});
+
+export const listReturns = withAuth<
+  { status?: ReturnStatus } | undefined,
+  Return[]
+>(async (ctx, filter) => {
+  const rows = await ctx.prisma.return.findMany({
+    where: {
+      companyId: ctx.companyId,
+      ...(filter?.status ? { status: filter.status } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    include: {
+      items: {
+        include: { product: { select: { name: true } } },
+      },
+    },
+  });
+
+  return ok(
+    rows.map((r) => ({
+      id: r.id,
+      type: r.type as ReturnType,
+      status: r.status as ReturnStatus,
+      warehouseId: r.warehouseId,
+      customerId: r.customerId ?? undefined,
+      supplierId: r.supplierId ?? undefined,
+      relatedOrderId: r.relatedOrderId ?? undefined,
+      reason: r.reason ?? undefined,
+      notes: r.notes ?? undefined,
+      createdAt: r.createdAt.toISOString(),
+      items: r.items.map((it) => ({
+        id: it.id,
+        productId: it.productId,
+        productName: it.product?.name,
+        quantity: Number(it.quantity),
+        condition: it.condition as ReturnItemCondition,
+        lotNumber: it.lotNumber ?? undefined,
+        unitValue: it.unitValue != null ? Number(it.unitValue) : undefined,
+      })),
+    }))
+  );
+});
 
 const idSchema = z.object({ returnId: z.string() });
 
@@ -162,94 +161,110 @@ export const approveReturn = withRole<z.input<typeof idSchema>, void>(
   ["admin", "manager"],
   async (ctx, raw) => {
     const { returnId } = parseInput(idSchema, raw);
-    if (ctx.demo) return ok();
-    const { error } = await ctx.supabase
-      .from("returns")
-      .update({
+
+    const res = await ctx.prisma.return.updateMany({
+      where: { id: returnId, companyId: ctx.companyId, status: "pending" },
+      data: {
         status: "approved",
-        approved_by: ctx.userId,
-        approved_at: new Date().toISOString(),
-      } as never)
-      .eq("id", returnId)
-      .eq("status", "pending");
-    if (error) throw ERR.database(error.message);
-    await logAudit(ctx, { action: "approve", table: "returns", recordId: returnId });
+        approvedById: ctx.userId,
+        approvedAt: new Date(),
+      },
+    });
+    if (res.count === 0) {
+      return fail("invalid_state", "İade onaylanamaz");
+    }
+
+    await logAudit(ctx, {
+      action: "approve",
+      table: "returns",
+      recordId: returnId,
+    });
     return ok();
   }
 );
 
-export const receiveReturn = withAuth<z.input<typeof idSchema>, { movementsCreated: number }>(
-  async (ctx, raw) => {
-    const { returnId } = parseInput(idSchema, raw);
-    if (ctx.demo) return ok({ movementsCreated: 0 });
+export const receiveReturn = withAuth<
+  z.input<typeof idSchema>,
+  { movementsCreated: number }
+>(async (ctx, raw) => {
+  const { returnId } = parseInput(idSchema, raw);
 
-    const { data: ret, error: readErr } = await ctx.supabase
-      .from("returns")
-      .select(`
-        id, type, warehouse_id, company_id, status,
-        items:return_items(product_id, quantity, condition, lot_number, unit_value)
-      `)
-      .eq("id", returnId)
-      .single();
-    if (readErr) throw ERR.database(readErr.message);
-    if (ret.status !== "approved") {
-      return fail("invalid_state", "Önce onaylayın");
-    }
+  const ret = await ctx.prisma.return.findFirst({
+    where: { id: returnId, companyId: ctx.companyId },
+    select: {
+      id: true,
+      type: true,
+      warehouseId: true,
+      companyId: true,
+      status: true,
+      items: {
+        select: {
+          productId: true,
+          quantity: true,
+          condition: true,
+          lotNumber: true,
+          unitValue: true,
+        },
+      },
+    },
+  });
+  if (!ret) throw ERR.notFound("İade");
+  if (ret.status !== "approved") {
+    return fail("invalid_state", "Önce onaylayın");
+  }
 
-    const items = (ret.items as unknown as {
-      product_id: string;
-      quantity: number;
-      condition: ReturnItemCondition;
-      lot_number?: string | null;
-      unit_value?: number | null;
-    }[]) ?? [];
-
-    let movementsCreated = 0;
-    for (const it of items) {
-      // Customer returns add stock back; supplier returns remove it.
+  const movementsCreated = await ctx.prisma.$transaction(async (tx) => {
+    let created = 0;
+    for (const it of ret.items) {
       const isCustomer = ret.type === "customer";
-      const { error } = await ctx.supabase.from("stock_movements").insert({
-        company_id: ret.company_id,
-        product_id: it.product_id,
-        movement_type: isCustomer ? "in" : "out",
-        quantity: it.quantity,
-        from_warehouse_id: isCustomer ? null : ret.warehouse_id,
-        to_warehouse_id: isCustomer ? ret.warehouse_id : null,
-        lot_number: it.lot_number ?? null,
-        unit_cost: it.unit_value ?? null,
-        reason: `return_${ret.type}_${it.condition}`,
-        reference_type: "return",
-        reference_number: returnId,
-        user_id: ctx.userId,
-      } as never);
-      if (!error) movementsCreated++;
 
-      // For customer returns, resellable / damaged also adds to inventory.
-      // scrap stays out of inventory.
-      if (isCustomer && it.condition !== "scrap") {
-        await ctx.supabase.from("inventory").insert({
-          company_id: ret.company_id,
-          product_id: it.product_id,
-          warehouse_id: ret.warehouse_id,
-          lot_number: it.lot_number ?? null,
+      await tx.stockMovement.create({
+        data: {
+          companyId: ret.companyId,
+          productId: it.productId,
+          movementType: isCustomer ? "in" : "out",
           quantity: it.quantity,
-          unit_cost: it.unit_value ?? 0,
-        } as never);
+          fromWarehouseId: isCustomer ? null : ret.warehouseId,
+          toWarehouseId: isCustomer ? ret.warehouseId : null,
+          lotNumber: it.lotNumber ?? null,
+          unitCost: it.unitValue,
+          reason: `return_${ret.type}_${it.condition}`,
+          referenceType: "return",
+          referenceNumber: returnId,
+          userId: ctx.userId,
+        },
+      });
+      created++;
+
+      // Customer returns: resellable / damaged also add to inventory; scrap stays out.
+      if (isCustomer && it.condition !== "scrap") {
+        await tx.inventory.create({
+          data: {
+            companyId: ret.companyId,
+            productId: it.productId,
+            warehouseId: ret.warehouseId,
+            lotNumber: it.lotNumber ?? null,
+            quantity: it.quantity,
+            unitCost: it.unitValue ?? 0,
+          },
+        });
       }
     }
 
-    await ctx.supabase
-      .from("returns")
-      .update({ status: "received" })
-      .eq("id", returnId);
-
-    await logAudit(ctx, {
-      action: "update",
-      table: "returns",
-      recordId: returnId,
-      newData: { status: "received", movements: movementsCreated },
+    await tx.return.update({
+      where: { id: returnId },
+      data: { status: "received" },
     });
 
-    return ok({ movementsCreated });
-  }
-);
+    return created;
+  });
+
+  await logAudit(ctx, {
+    action: "update",
+    table: "returns",
+    recordId: returnId,
+    newData: { status: "received", movements: movementsCreated },
+  });
+
+  return ok({ movementsCreated });
+});

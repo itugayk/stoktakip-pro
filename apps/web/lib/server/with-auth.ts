@@ -1,70 +1,40 @@
-import { createClient } from "@/lib/supabase/server";
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import type { PrismaClient } from "@prisma/client";
 import type { UserRole } from "@/lib/types";
 import { log } from "@/lib/log";
 import { AppError, ERR } from "./errors";
 import { ok, fail, type Result } from "./result";
 
-const DEMO_MODE =
-  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-
-type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
-
 export interface AuthCtx {
   userId: string;
   companyId: string;
   role: UserRole;
-  supabase: SupabaseServerClient;
-  demo: boolean;
+  prisma: PrismaClient;
+  /** Always false now that Supabase + demo mode are gone. Kept for backwards compat. */
+  demo: false;
 }
 
-/**
- * Demo context shared by all HOFs when env vars are placeholders.
- * Keeps demo paths consistent with real-auth call sites.
- */
-const DEMO_CTX: Omit<AuthCtx, "supabase"> = {
-  userId: "demo-user",
-  companyId: "demo-company",
-  role: "admin",
-  demo: true,
-};
-
 async function resolveCtx(): Promise<AuthCtx> {
-  if (DEMO_MODE) {
-    return { ...DEMO_CTX, supabase: null as unknown as SupabaseServerClient };
-  }
-
-  const supabase = await createClient();
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) throw ERR.unauthorized();
-
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .select("company_id, role")
-    .eq("id", userData.user.id)
-    .single();
-
-  if (error || !profile) throw ERR.notFound("Profil");
+  const session = await auth();
+  if (!session?.user?.id || !session.user.companyId) throw ERR.unauthorized();
 
   return {
-    userId: userData.user.id,
-    companyId: profile.company_id,
-    role: profile.role as UserRole,
-    supabase,
+    userId: session.user.id,
+    companyId: session.user.companyId,
+    role: session.user.role as UserRole,
+    prisma,
     demo: false,
   };
 }
 
 function handleError(e: unknown): Result<never> {
   if (e instanceof AppError) {
-    // Expected operational failures (validation, auth, etc.) are info-level —
-    // they're part of normal flow and surface to the user via Result.
     if (e.code !== "validation" && e.code !== "unauthorized") {
       log.warn(`action: ${e.code}`, { message: e.message, field: e.field });
     }
     return fail(e.code, e.message, e.field);
   }
-  // Unexpected: log full error with stack for triage.
   log.error(e, { source: "withAuth" });
   const msg = e instanceof Error ? e.message : "Beklenmeyen bir hata oluştu";
   return fail("internal", msg);
@@ -93,7 +63,7 @@ export function withRole<I, T>(
   return async (input: I) => {
     try {
       const ctx = await resolveCtx();
-      if (!ctx.demo && !roles.includes(ctx.role)) {
+      if (!roles.includes(ctx.role)) {
         throw ERR.forbidden();
       }
       const res = await action(ctx, input);

@@ -1,7 +1,7 @@
 "use server";
 
 import { sign } from "./sign";
-import { serviceClient } from "@/lib/supabase/service";
+import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/log";
 
 /**
@@ -11,9 +11,6 @@ import { log } from "@/lib/log";
  * The function loads all active webhooks subscribed to the event, signs each
  * delivery, and writes a row to webhook_deliveries with the result. Failures
  * do not throw — webhooks are best-effort by design.
- *
- * Production deployments should swap the inline fetch for an async queue
- * (Edge function, SQS, etc.) so a slow subscriber doesn't slow domain writes.
  */
 
 export type WebhookEvent =
@@ -30,10 +27,6 @@ export type WebhookEvent =
   | "return.created"
   | "return.received";
 
-const DEMO_MODE =
-  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-
 const TIMEOUT_MS = 10_000;
 
 export async function fireWebhookEvent(
@@ -41,20 +34,24 @@ export async function fireWebhookEvent(
   event: WebhookEvent,
   payload: Record<string, unknown>
 ): Promise<void> {
-  if (DEMO_MODE) return;
+  const subs = await prisma.webhook.findMany({
+    where: {
+      companyId,
+      isActive: true,
+      events: { has: event },
+    },
+    select: { id: true, url: true, secret: true },
+  });
 
-  const supabase = serviceClient();
-  const { data: subs } = await supabase
-    .from("webhooks")
-    .select("id, url, secret")
-    .eq("company_id", companyId)
-    .eq("is_active", true)
-    .contains("events", [event]);
-
-  if (!subs || subs.length === 0) return;
+  if (subs.length === 0) return;
 
   const deliveryId = crypto.randomUUID();
-  const body = JSON.stringify({ event, deliveryId, occurredAt: new Date().toISOString(), data: payload });
+  const body = JSON.stringify({
+    event,
+    deliveryId,
+    occurredAt: new Date().toISOString(),
+    data: payload,
+  });
 
   await Promise.all(
     subs.map(async (sub) => {
@@ -88,22 +85,28 @@ export async function fireWebhookEvent(
       }
 
       const duration = Date.now() - start;
-      const success = statusCode !== null && statusCode >= 200 && statusCode < 300;
+      const success =
+        statusCode !== null && statusCode >= 200 && statusCode < 300;
 
       try {
-        await supabase.from("webhook_deliveries").insert({
-          webhook_id: sub.id,
-          company_id: companyId,
-          event,
-          payload: { event, deliveryId, data: payload },
-          status_code: statusCode,
-          response_body: responseBody,
-          duration_ms: duration,
-          success,
-          error: errorMsg,
-        } as never);
+        await prisma.webhookDelivery.create({
+          data: {
+            webhookId: sub.id,
+            companyId,
+            event,
+            payload: { event, deliveryId, data: payload } as never,
+            statusCode,
+            responseBody,
+            durationMs: duration,
+            success,
+            error: errorMsg,
+          },
+        });
       } catch (e) {
-        log.error(e, { context: "webhook_delivery_log_failed", webhookId: sub.id });
+        log.error(e, {
+          context: "webhook_delivery_log_failed",
+          webhookId: sub.id,
+        });
       }
     })
   );

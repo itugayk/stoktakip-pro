@@ -2,7 +2,12 @@
 
 import { withAuth, withCompany, ok, parseInput, z, ERR } from "@/lib/server";
 
-export type ReportType = "inventory" | "expiry" | "turnover" | "profit" | "sales_summary";
+export type ReportType =
+  | "inventory"
+  | "expiry"
+  | "turnover"
+  | "profit"
+  | "sales_summary";
 export type Frequency = "daily" | "weekly" | "monthly";
 
 export interface ScheduledReport {
@@ -22,7 +27,13 @@ export interface ScheduledReport {
 const upsertSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1, "Ad zorunlu"),
-  reportType: z.enum(["inventory", "expiry", "turnover", "profit", "sales_summary"]),
+  reportType: z.enum([
+    "inventory",
+    "expiry",
+    "turnover",
+    "profit",
+    "sales_summary",
+  ]),
   params: z.record(z.string(), z.unknown()).default({}),
   frequency: z.enum(["daily", "weekly", "monthly"]),
   dayOfPeriod: z.number().int().min(0).max(31).optional(),
@@ -33,14 +44,13 @@ const upsertSchema = z.object({
 
 /**
  * Compute the next-run timestamp from the schedule.
- * Local hour assumed in UTC for simplicity; in production the company's
- * timezone setting would map it.
+ * Local hour assumed in UTC for simplicity.
  */
 function nextRunFromSchedule(s: {
   frequency: Frequency;
   dayOfPeriod?: number;
   hourOfDay: number;
-}): string {
+}): Date {
   const now = new Date();
   const next = new Date(now);
   next.setUTCSeconds(0, 0);
@@ -49,89 +59,97 @@ function nextRunFromSchedule(s: {
 
   if (s.frequency === "daily") {
     if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
-    return next.toISOString();
+    return next;
   }
   if (s.frequency === "weekly") {
     const target = s.dayOfPeriod ?? 1; // Monday by default
     while (next.getUTCDay() !== target || next <= now) {
       next.setUTCDate(next.getUTCDate() + 1);
     }
-    return next.toISOString();
+    return next;
   }
   // monthly
   const target = s.dayOfPeriod ?? 1;
   next.setUTCDate(Math.min(target, 28));
   if (next <= now) next.setUTCMonth(next.getUTCMonth() + 1);
-  return next.toISOString();
+  return next;
 }
 
-export const listScheduledReports = withAuth<void, ScheduledReport[]>(async (ctx) => {
-  if (ctx.demo) return ok([]);
+export const listScheduledReports = withAuth<void, ScheduledReport[]>(
+  async (ctx) => {
+    const rows = await ctx.prisma.scheduledReport.findMany({
+      where: { companyId: ctx.companyId },
+      orderBy: { name: "asc" },
+    });
 
-  const { data, error } = await ctx.supabase
-    .from("scheduled_reports")
-    .select("*")
-    .order("name");
-  if (error) throw ERR.database(error.message);
-
-  return ok(
-    (data ?? []).map((r) => ({
-      id: r.id,
-      name: r.name,
-      reportType: r.report_type as ReportType,
-      params: (r.params as Record<string, unknown>) ?? {},
-      frequency: r.frequency as Frequency,
-      dayOfPeriod: r.day_of_period ?? undefined,
-      hourOfDay: Number(r.hour_of_day),
-      recipients: r.recipients ?? [],
-      isActive: r.is_active,
-      lastRunAt: r.last_run_at ?? undefined,
-      nextRunAt: r.next_run_at ?? undefined,
-    }))
-  );
-});
+    return ok(
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        reportType: r.reportType as ReportType,
+        params: (r.params as Record<string, unknown>) ?? {},
+        frequency: r.frequency as Frequency,
+        dayOfPeriod: r.dayOfPeriod ?? undefined,
+        hourOfDay: Number(r.hourOfDay),
+        recipients: r.recipients ?? [],
+        isActive: r.isActive,
+        lastRunAt: r.lastRunAt?.toISOString() ?? undefined,
+        nextRunAt: r.nextRunAt?.toISOString() ?? undefined,
+      }))
+    );
+  }
+);
 
 export const upsertScheduledReport = withCompany<
   z.input<typeof upsertSchema>,
   { id: string }
 >(async (ctx, raw) => {
   const data = parseInput(upsertSchema, raw);
-  if (ctx.demo) return ok({ id: data.id ?? `sr-${Date.now()}` });
 
-  const next_run_at = nextRunFromSchedule(data);
+  const nextRunAt = nextRunFromSchedule(data);
   const payload = {
     name: data.name,
-    report_type: data.reportType,
-    params: data.params,
+    reportType: data.reportType,
+    params: data.params as never,
     frequency: data.frequency,
-    day_of_period: data.dayOfPeriod ?? null,
-    hour_of_day: data.hourOfDay,
+    dayOfPeriod: data.dayOfPeriod ?? null,
+    hourOfDay: data.hourOfDay,
     recipients: data.recipients,
-    is_active: data.isActive,
-    next_run_at,
+    isActive: data.isActive,
+    nextRunAt,
   };
 
   if (data.id) {
-    const { error } = await ctx.supabase
-      .from("scheduled_reports")
-      .update(payload)
-      .eq("id", data.id);
-    if (error) throw ERR.database(error.message);
+    const exists = await ctx.prisma.scheduledReport.findFirst({
+      where: { id: data.id, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!exists) throw ERR.notFound("Zamanlanmış rapor");
+
+    await ctx.prisma.scheduledReport.update({
+      where: { id: data.id },
+      data: payload,
+    });
     return ok({ id: data.id });
   }
 
-  const { data: row, error } = await ctx.supabase
-    .from("scheduled_reports")
-    .insert({ ...payload, company_id: ctx.companyId, created_by: ctx.userId } as never)
-    .select("id")
-    .single();
-  if (error) throw ERR.database(error.message);
+  const row = await ctx.prisma.scheduledReport.create({
+    data: {
+      ...payload,
+      companyId: ctx.companyId,
+      createdById: ctx.userId,
+    },
+    select: { id: true },
+  });
   return ok({ id: row.id });
 });
 
-export const deleteScheduledReport = withCompany<string, void>(async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase.from("scheduled_reports").delete().eq("id", id);
-  if (error) throw ERR.database(error.message);
-  return ok();
-});
+export const deleteScheduledReport = withCompany<string, void>(
+  async (ctx, id) => {
+    const res = await ctx.prisma.scheduledReport.deleteMany({
+      where: { id, companyId: ctx.companyId },
+    });
+    if (res.count === 0) throw ERR.notFound("Zamanlanmış rapor");
+    return ok();
+  }
+);

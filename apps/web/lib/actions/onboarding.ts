@@ -1,6 +1,7 @@
 "use server";
 
-import { withCompany, ok, parseInput, z, ERR } from "@/lib/server";
+import type { Prisma } from "@prisma/client";
+import { withCompany, ok, parseInput, z } from "@/lib/server";
 import { fromCategory, fromProduct, fromWarehouse } from "@/lib/mappers";
 
 const onboardingSchema = z.object({
@@ -40,95 +41,102 @@ const onboardingSchema = z.object({
 });
 
 /**
- * Single atomic-ish onboarding step: writes company settings, the first
- * warehouse, categories, and seed products. Real DB ops happen sequentially —
- * if a later step fails, earlier rows remain and the user can re-run.
+ * Atomic onboarding step: writes company settings, the first warehouse,
+ * categories, and seed products. All inside a transaction so a failure rolls
+ * everything back.
  */
 export const completeOnboarding = withCompany<
   z.input<typeof onboardingSchema>,
-  { warehouseId?: string; categoryCount: number; productCount: number }
+  { warehouseId: string; categoryCount: number; productCount: number }
 >(async (ctx, raw) => {
   const data = parseInput(onboardingSchema, raw);
-  if (ctx.demo) {
-    return ok({
-      warehouseId: "wh-demo",
-      categoryCount: data.categories.length,
-      productCount: data.products.length,
+
+  const result = await ctx.prisma.$transaction(async (tx) => {
+    // 1) Company settings + onboarding marker
+    await tx.company.update({
+      where: { id: ctx.companyId },
+      data: {
+        name: data.company.name,
+        taxId: data.company.taxId || null,
+        phone: data.company.phone || null,
+        address: data.company.address || null,
+        logoUrl: data.company.logoUrl || null,
+        settings: { onboarding_completed_at: new Date().toISOString() },
+      },
     });
-  }
 
-  // 1) Company settings + name/tax/phone/address + onboarding marker
-  const { error: companyErr } = await ctx.supabase
-    .from("companies")
-    .update({
-      name: data.company.name,
-      tax_id: data.company.taxId || null,
-      phone: data.company.phone || null,
-      address: data.company.address || null,
-      logo_url: data.company.logoUrl || null,
-      settings: { onboarding_completed_at: new Date().toISOString() },
-    })
-    .eq("id", ctx.companyId);
-  if (companyErr) throw ERR.database(companyErr.message);
-
-  // 2) First warehouse
-  const whInsert = fromWarehouse({ ...data.warehouse, companyId: ctx.companyId });
-  const { data: wh, error: whErr } = await ctx.supabase
-    .from("warehouses")
-    .insert(whInsert as never)
-    .select("id")
-    .single();
-  if (whErr) throw ERR.database(whErr.message);
-
-  // 3) Categories (skip duplicates by name)
-  let categoryCount = 0;
-  const categoryIdByName = new Map<string, string>();
-  for (const c of data.categories) {
-    const ins = fromCategory({ ...c, companyId: ctx.companyId });
-    const { data: row, error } = await ctx.supabase
-      .from("categories")
-      .insert(ins as never)
-      .select("id")
-      .single();
-    if (!error && row) {
-      categoryIdByName.set(c.name, row.id);
-      categoryCount++;
-    }
-  }
-
-  // 4) Seed products (use first category if not specified)
-  const firstCategoryId = categoryIdByName.values().next().value;
-  let productCount = 0;
-  for (const p of data.products) {
-    const ins = fromProduct({
-      ...p,
+    // 2) First warehouse
+    const whInsert = fromWarehouse({
+      ...data.warehouse,
       companyId: ctx.companyId,
-      categoryId: firstCategoryId,
+    }) as Prisma.WarehouseUncheckedCreateInput;
+    const wh = await tx.warehouse.create({
+      data: whInsert,
+      select: { id: true },
     });
-    const { error } = await ctx.supabase.from("products").insert(ins as never);
-    if (!error) productCount++;
-  }
 
-  return ok({ warehouseId: wh.id, categoryCount, productCount });
+    // 3) Categories (skip duplicates by name).
+    let categoryCount = 0;
+    const categoryIdByName = new Map<string, string>();
+    for (const c of data.categories) {
+      try {
+        const ins = fromCategory({
+          ...c,
+          companyId: ctx.companyId,
+        }) as Prisma.CategoryUncheckedCreateInput;
+        const row = await tx.category.create({
+          data: ins,
+          select: { id: true },
+        });
+        categoryIdByName.set(c.name, row.id);
+        categoryCount++;
+      } catch {
+        // Duplicate name – skip.
+      }
+    }
+
+    // 4) Seed products (use first category if not specified).
+    const firstCategoryId = categoryIdByName.values().next().value as
+      | string
+      | undefined;
+    let productCount = 0;
+    for (const p of data.products) {
+      try {
+        const ins = fromProduct({
+          ...p,
+          companyId: ctx.companyId,
+          categoryId: firstCategoryId,
+        }) as Prisma.ProductUncheckedCreateInput;
+        await tx.product.create({ data: ins });
+        productCount++;
+      } catch {
+        // Duplicate SKU – skip.
+      }
+    }
+
+    return { warehouseId: wh.id, categoryCount, productCount };
+  });
+
+  return ok(result);
 });
 
 /**
  * Check whether onboarding has already been completed. The dashboard layout
  * can call this on first paint to redirect new users.
  */
-export const getOnboardingStatus = withCompany<void, { completed: boolean; completedAt?: string }>(
-  async (ctx) => {
-    if (ctx.demo) return ok({ completed: true });
-    const { data, error } = await ctx.supabase
-      .from("companies")
-      .select("settings")
-      .eq("id", ctx.companyId)
-      .single();
-    if (error) throw ERR.database(error.message);
-    const settings = (data?.settings ?? {}) as { onboarding_completed_at?: string };
-    return ok({
-      completed: Boolean(settings.onboarding_completed_at),
-      completedAt: settings.onboarding_completed_at,
-    });
-  }
-);
+export const getOnboardingStatus = withCompany<
+  void,
+  { completed: boolean; completedAt?: string }
+>(async (ctx) => {
+  const company = await ctx.prisma.company.findUnique({
+    where: { id: ctx.companyId },
+    select: { settings: true },
+  });
+  const settings = ((company?.settings ?? {}) as {
+    onboarding_completed_at?: string;
+  });
+  return ok({
+    completed: Boolean(settings.onboarding_completed_at),
+    completedAt: settings.onboarding_completed_at,
+  });
+});

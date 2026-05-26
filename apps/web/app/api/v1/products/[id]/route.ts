@@ -1,5 +1,10 @@
-import { authenticateRequest, errorResponse, json, requireScope } from "@/lib/api/auth";
-import { serviceClient } from "@/lib/supabase/service";
+import {
+  authenticateRequest,
+  errorResponse,
+  json,
+  requireScope,
+} from "@/lib/api/auth";
+import { prisma } from "@/lib/prisma";
 import { toProductWithStock } from "@/lib/mappers";
 
 /** GET /api/v1/products/:id */
@@ -12,17 +17,11 @@ export async function GET(
   if (!requireScope(auth.ctx, "read")) return errorResponse(403, "forbidden");
 
   const { id } = await params;
-  if (auth.ctx.companyId === "demo-company") return errorResponse(404, "not_found");
 
-  const { data, error } = await serviceClient()
-    .from("product_stock_summary")
-    .select("*")
-    .eq("company_id", auth.ctx.companyId)
-    .eq("product_id", id)
-    .maybeSingle();
+  const row = await prisma.productStockSummary.findFirst({
+    where: { productId: id, companyId: auth.ctx.companyId },
+  });
 
-  if (error) return errorResponse(500, "database_error", error.message);
-  if (!data) return errorResponse(404, "not_found");
-
-  return json({ data: toProductWithStock(data) });
+  if (!row) return errorResponse(404, "not_found");
+  return json({ data: toProductWithStock(row) });
 }

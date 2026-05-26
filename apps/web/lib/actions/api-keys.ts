@@ -24,34 +24,21 @@ function generateToken(): string {
 }
 
 export const listApiKeys = withCompany<void, ApiKey[]>(async (ctx) => {
-  if (ctx.demo) {
-    return ok([
-      {
-        id: "demo-1",
-        name: "Demo Key",
-        prefix: "sk_live_demo",
-        scopes: ["read", "write"],
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-  }
-
-  const { data, error } = await ctx.supabase
-    .from("api_keys")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.apiKey.findMany({
+    where: { companyId: ctx.companyId },
+    orderBy: { createdAt: "desc" },
+  });
 
   return ok(
-    (data ?? []).map((r) => ({
+    rows.map((r) => ({
       id: r.id,
       name: r.name,
       prefix: r.prefix,
       scopes: r.scopes ?? [],
-      createdAt: r.created_at,
-      lastUsedAt: r.last_used_at ?? undefined,
-      revokedAt: r.revoked_at ?? undefined,
-      expiresAt: r.expires_at ?? undefined,
+      createdAt: r.createdAt.toISOString(),
+      lastUsedAt: r.lastUsedAt?.toISOString() ?? undefined,
+      revokedAt: r.revokedAt?.toISOString() ?? undefined,
+      expiresAt: r.expiresAt?.toISOString() ?? undefined,
     }))
   );
 });
@@ -63,58 +50,42 @@ const createSchema = z.object({
 });
 
 /** Only admin can mint API keys. Returns the raw token ONCE. */
-export const createApiKey = withRole<z.input<typeof createSchema>, { token: string; key: ApiKey }>(
-  ["admin"],
-  async (ctx, raw) => {
-    const data = parseInput(createSchema, raw);
-    if (ctx.demo) {
-      return ok({
-        token: "sk_live_demo_" + Date.now().toString(36),
-        key: {
-          id: "demo",
-          name: data.name,
-          prefix: "sk_live_demo",
-          scopes: data.scopes,
-          createdAt: new Date().toISOString(),
-        },
-      });
-    }
+export const createApiKey = withRole<
+  z.input<typeof createSchema>,
+  { token: string; key: ApiKey }
+>(["admin"], async (ctx, raw) => {
+  const data = parseInput(createSchema, raw);
+  const token = generateToken();
 
-    const token = generateToken();
-    const { data: row, error } = await ctx.supabase
-      .from("api_keys")
-      .insert({
-        company_id: ctx.companyId,
-        name: data.name,
-        prefix: tokenPrefix(token),
-        hashed_token: hashToken(token),
-        scopes: data.scopes,
-        created_by: ctx.userId,
-        expires_at: data.expiresAt ?? null,
-      } as never)
-      .select("*")
-      .single();
-    if (error) throw ERR.database(error.message);
+  const row = await ctx.prisma.apiKey.create({
+    data: {
+      companyId: ctx.companyId,
+      name: data.name,
+      prefix: tokenPrefix(token),
+      hashedToken: hashToken(token),
+      scopes: data.scopes,
+      createdById: ctx.userId,
+      expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+    },
+  });
 
-    return ok({
-      token,
-      key: {
-        id: row.id,
-        name: row.name,
-        prefix: row.prefix,
-        scopes: row.scopes,
-        createdAt: row.created_at,
-      },
-    });
-  }
-);
+  return ok({
+    token,
+    key: {
+      id: row.id,
+      name: row.name,
+      prefix: row.prefix,
+      scopes: row.scopes,
+      createdAt: row.createdAt.toISOString(),
+    },
+  });
+});
 
 export const revokeApiKey = withRole<string, void>(["admin"], async (ctx, id) => {
-  if (ctx.demo) return ok();
-  const { error } = await ctx.supabase
-    .from("api_keys")
-    .update({ revoked_at: new Date().toISOString() })
-    .eq("id", id);
-  if (error) throw ERR.database(error.message);
+  const res = await ctx.prisma.apiKey.updateMany({
+    where: { id, companyId: ctx.companyId },
+    data: { revokedAt: new Date() },
+  });
+  if (res.count === 0) throw ERR.notFound("API anahtarı");
   return ok();
 });

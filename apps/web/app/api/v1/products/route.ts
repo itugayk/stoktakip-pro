@@ -1,5 +1,10 @@
-import { authenticateRequest, errorResponse, json, requireScope } from "@/lib/api/auth";
-import { serviceClient } from "@/lib/supabase/service";
+import {
+  authenticateRequest,
+  errorResponse,
+  json,
+  requireScope,
+} from "@/lib/api/auth";
+import { prisma } from "@/lib/prisma";
 import { toProductWithStock } from "@/lib/mappers";
 
 /**
@@ -17,30 +22,37 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const q = url.searchParams.get("q");
-  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+  const limit = Math.min(
+    200,
+    Math.max(1, Number(url.searchParams.get("limit")) || 50)
+  );
   const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
 
-  if (auth.ctx.companyId === "demo-company") {
-    return json({ data: [], total: 0, limit, offset });
-  }
+  const where = {
+    companyId: auth.ctx.companyId,
+    ...(q
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" as const } },
+            { sku: { contains: q, mode: "insensitive" as const } },
+            { barcode: { contains: q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
 
-  let query = serviceClient()
-    .from("product_stock_summary")
-    .select("*", { count: "exact" })
-    .eq("company_id", auth.ctx.companyId)
-    .range(offset, offset + limit - 1);
-
-  if (q) {
-    const escaped = q.replace(/[%_]/g, "\\$&");
-    query = query.or(`name.ilike.%${escaped}%,sku.ilike.%${escaped}%,barcode.ilike.%${escaped}%`);
-  }
-
-  const { data, count, error } = await query;
-  if (error) return errorResponse(500, "database_error", error.message);
+  const [rows, total] = await Promise.all([
+    prisma.productStockSummary.findMany({
+      where,
+      skip: offset,
+      take: limit,
+    }),
+    prisma.productStockSummary.count({ where }),
+  ]);
 
   return json({
-    data: (data ?? []).map(toProductWithStock),
-    total: count ?? 0,
+    data: rows.map(toProductWithStock),
+    total,
     limit,
     offset,
   });

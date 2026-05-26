@@ -1,19 +1,20 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { serviceClient } from "@/lib/supabase/service";
+import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/log";
+import type { SubscriptionPlan } from "@prisma/client";
 
 /**
  * Stripe webhook receiver. Verifies the signature, then updates the
  * companies.subscription_plan / subscription_expires_at based on the event.
- *
- * To wire up: in Stripe Dashboard → Developers → Webhooks, add this URL and
- * subscribe to: checkout.session.completed, customer.subscription.updated,
- * customer.subscription.deleted, invoice.payment_failed.
  */
 
 const TOLERANCE_S = 300;
 
-function verifyStripeSignature(header: string | null, body: string, secret: string): boolean {
+function verifyStripeSignature(
+  header: string | null,
+  body: string,
+  secret: string
+): boolean {
   if (!header) return false;
   const parts = Object.fromEntries(
     header.split(",").map((p) => {
@@ -25,7 +26,9 @@ function verifyStripeSignature(header: string | null, body: string, secret: stri
   const sig = parts.v1;
   if (!Number.isFinite(ts) || !sig) return false;
   if (Math.abs(Math.floor(Date.now() / 1000) - ts) > TOLERANCE_S) return false;
-  const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+  const expected = createHmac("sha256", secret)
+    .update(`${ts}.${body}`)
+    .digest("hex");
   const a = Buffer.from(sig, "hex");
   const b = Buffer.from(expected, "hex");
   if (a.length !== b.length) return false;
@@ -55,8 +58,6 @@ export async function POST(req: Request) {
     return new Response("invalid json", { status: 400 });
   }
 
-  const supabase = serviceClient();
-
   try {
     switch (event.type) {
       case "checkout.session.completed": {
@@ -64,16 +65,16 @@ export async function POST(req: Request) {
           client_reference_id?: string;
           customer?: string;
           subscription?: string;
-          metadata?: { plan?: string };
+          metadata?: { plan?: SubscriptionPlan };
         };
         if (session.client_reference_id && session.metadata?.plan) {
-          await supabase
-            .from("companies")
-            .update({
-              subscription_plan: session.metadata.plan,
-            })
-            .eq("id", session.client_reference_id);
-          log.info("stripe checkout completed", { companyId: session.client_reference_id });
+          await prisma.company.update({
+            where: { id: session.client_reference_id },
+            data: { subscriptionPlan: session.metadata.plan },
+          });
+          log.info("stripe checkout completed", {
+            companyId: session.client_reference_id,
+          });
         }
         break;
       }
@@ -85,19 +86,29 @@ export async function POST(req: Request) {
           metadata?: { companyId?: string };
         };
         if (sub.metadata?.companyId) {
-          const updates: Record<string, unknown> = {};
-          if (sub.status === "canceled") updates.subscription_plan = "free";
+          const updates: {
+            subscriptionPlan?: SubscriptionPlan;
+            subscriptionExpiresAt?: Date;
+          } = {};
+          if (sub.status === "canceled") updates.subscriptionPlan = "free";
           if (sub.current_period_end) {
-            updates.subscription_expires_at = new Date(sub.current_period_end * 1000).toISOString();
+            updates.subscriptionExpiresAt = new Date(
+              sub.current_period_end * 1000
+            );
           }
           if (Object.keys(updates).length > 0) {
-            await supabase.from("companies").update(updates).eq("id", sub.metadata.companyId);
+            await prisma.company.update({
+              where: { id: sub.metadata.companyId },
+              data: updates,
+            });
           }
         }
         break;
       }
       case "invoice.payment_failed": {
-        const invoice = event.data.object as { metadata?: { companyId?: string } };
+        const invoice = event.data.object as {
+          metadata?: { companyId?: string };
+        };
         if (invoice.metadata?.companyId) {
           log.warn("payment failed", { companyId: invoice.metadata.companyId });
           // Could trigger an in-app notification here.

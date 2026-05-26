@@ -1,6 +1,6 @@
 "use server";
 
-import { withAuth, ok, parseInput, z, ERR } from "@/lib/server";
+import { withAuth, ok, parseInput, z } from "@/lib/server";
 import type { AuditEntry } from "@/lib/server";
 
 const querySchema = z.object({
@@ -13,39 +13,34 @@ export interface AuditLogEntry extends AuditEntry {
   userName?: string;
 }
 
-export const getAuditTrail = withAuth<z.input<typeof querySchema>, AuditLogEntry[]>(
-  async (ctx, raw) => {
-    const { table, recordId, limit = 50 } = parseInput(querySchema, raw);
-    if (ctx.demo) return ok([]);
+export const getAuditTrail = withAuth<
+  z.input<typeof querySchema>,
+  AuditLogEntry[]
+>(async (ctx, raw) => {
+  const { table, recordId, limit = 50 } = parseInput(querySchema, raw);
 
-    const { data, error } = await ctx.supabase
-      .from("audit_log")
-      .select(`
-        id, user_id, action, table_name, record_id, old_data, new_data, created_at,
-        user:profiles!audit_log_user_id_fkey(full_name)
-      `)
-      .eq("table_name", table)
-      .eq("record_id", recordId)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-    if (error) throw ERR.database(error.message);
+  const rows = await ctx.prisma.auditLog.findMany({
+    where: {
+      companyId: ctx.companyId,
+      tableName: table,
+      recordId,
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { user: { select: { fullName: true } } },
+  });
 
-    return ok(
-      (data ?? []).map((r) => {
-        const user = r.user as { full_name: string } | { full_name: string }[] | null;
-        const userName = Array.isArray(user) ? user[0]?.full_name : user?.full_name;
-        return {
-          id: r.id,
-          userId: r.user_id,
-          action: r.action as AuditLogEntry["action"],
-          tableName: r.table_name,
-          recordId: r.record_id,
-          oldData: (r.old_data as Record<string, unknown>) ?? undefined,
-          newData: (r.new_data as Record<string, unknown>) ?? undefined,
-          createdAt: r.created_at,
-          userName,
-        };
-      })
-    );
-  }
-);
+  return ok(
+    rows.map<AuditLogEntry>((r) => ({
+      id: r.id,
+      userId: r.userId,
+      action: r.action as AuditLogEntry["action"],
+      tableName: r.tableName,
+      recordId: r.recordId,
+      oldData: (r.oldData as Record<string, unknown>) ?? undefined,
+      newData: (r.newData as Record<string, unknown>) ?? undefined,
+      createdAt: r.createdAt.toISOString(),
+      userName: r.user?.fullName,
+    }))
+  );
+});

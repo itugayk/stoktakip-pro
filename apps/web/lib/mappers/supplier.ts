@@ -1,36 +1,35 @@
-import type { Database } from "@/lib/supabase/database.types";
+import type { Prisma, Supplier as PrismaSupplier } from "@prisma/client";
 import type { Supplier } from "@/lib/types";
 
-type SupplierRow = Database["public"]["Tables"]["suppliers"]["Row"];
-type SupplierInsert = Database["public"]["Tables"]["suppliers"]["Insert"];
+type SupplierCreate = Prisma.SupplierUncheckedCreateInput;
 
-export function toSupplier(row: SupplierRow, totalOrders = 0): Supplier {
+export function toSupplier(row: PrismaSupplier, totalOrders = 0): Supplier {
   return {
     id: row.id,
     name: row.name,
-    contactPerson: row.contact_person ?? undefined,
+    contactPerson: row.contactPerson ?? undefined,
     email: row.email ?? undefined,
     phone: row.phone ?? undefined,
     address: row.address ?? undefined,
-    taxId: row.tax_id ?? undefined,
-    isActive: row.is_active,
+    taxId: row.taxId ?? undefined,
+    isActive: row.isActive,
     totalOrders,
-    createdAt: row.created_at,
+    createdAt: typeof row.createdAt === "string" ? row.createdAt : row.createdAt.toISOString(),
   };
 }
 
 export function fromSupplier(
   s: Partial<Supplier> & { companyId?: string; notes?: string }
-): Partial<SupplierInsert> {
-  const out: Partial<SupplierInsert> = {};
-  if (s.companyId !== undefined) out.company_id = s.companyId;
+): Partial<SupplierCreate> {
+  const out: Partial<SupplierCreate> = {};
+  if (s.companyId !== undefined) out.companyId = s.companyId;
   if (s.name !== undefined) out.name = s.name;
-  if (s.contactPerson !== undefined) out.contact_person = s.contactPerson || null;
+  if (s.contactPerson !== undefined) out.contactPerson = s.contactPerson || null;
   if (s.email !== undefined) out.email = s.email || null;
   if (s.phone !== undefined) out.phone = s.phone || null;
   if (s.address !== undefined) out.address = s.address || null;
-  if (s.taxId !== undefined) out.tax_id = s.taxId || null;
-  if (s.isActive !== undefined) out.is_active = s.isActive;
+  if (s.taxId !== undefined) out.taxId = s.taxId || null;
+  if (s.isActive !== undefined) out.isActive = s.isActive;
   if (s.notes !== undefined) out.notes = s.notes || null;
   return out;
 }

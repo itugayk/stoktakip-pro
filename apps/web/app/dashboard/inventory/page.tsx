@@ -82,7 +82,7 @@ export default function InventoryPage() {
 
   const openAdd = (type: MovementType) => {
     setMoveType(type);
-    setForm({ productId: "", warehouseId: "wh-1", toWarehouseId: "", quantity: "", lotNumber: "", expiryDate: "", reason: "", reference: "" });
+    setForm({ productId: "", warehouseId: "", toWarehouseId: "", quantity: "", lotNumber: "", expiryDate: "", reason: "", reference: "" });
     setShowAddDialog(true);
   };
 
