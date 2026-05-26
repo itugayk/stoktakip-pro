@@ -1,0 +1,15 @@
+# Force LF line endings for shell scripts — Linux containers will fail to
+# execute scripts with CRLF (bad interpreter error).
+*.sh        text eol=lf
+*.bash      text eol=lf
+Dockerfile  text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Optional: normalize other plain-text files automatically.
+*.ts     text
+*.tsx    text
+*.js     text
+*.json   text
+*.md     text
+*.yaml   text
+*.yml    text
