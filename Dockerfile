@@ -15,7 +15,14 @@ FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/
-RUN pnpm install --frozen-lockfile --filter web...
+# Prisma engines + sharp + esbuild postinstall scripts fetch binaries from
+# CDNs (binaries.prisma.sh, etc.) which sometimes ECONNRESET in CI. Retry up
+# to 3 times before failing the whole image.
+RUN for i in 1 2 3; do \
+      pnpm install --frozen-lockfile --filter web... && break; \
+      echo "pnpm install failed (attempt $i) — retrying in 10s..."; \
+      sleep 10; \
+    done
 
 # --- Build ---
 FROM base AS builder
