@@ -19,6 +19,7 @@ import {
   z,
   ERR,
 } from "@/lib/server";
+import { assertWithinLimit } from "@/lib/billing/enforce";
 
 // ============================================
 // WAREHOUSES
@@ -71,6 +72,7 @@ export const createWarehouse = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(warehouseInputSchema, raw);
+  await assertWithinLimit(ctx, "warehouses");
 
   const insert = fromWarehouse({
     ...data,

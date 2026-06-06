@@ -10,6 +10,7 @@ import {
   ERR,
   logAudit,
 } from "@/lib/server";
+import { planLimit } from "@/lib/billing/plans";
 import type { UserRole } from "@/lib/types";
 
 // ============================================
@@ -192,8 +193,11 @@ export const getPlanLimits = withAuth<void, PlanLimits>(async (ctx) => {
     },
   });
 
-  const limits =
-    (company?.subscriptionLimits as Partial<PlanLimits> | null) ?? {};
+  const override =
+    (company?.subscriptionLimits as
+      | { maxUsers?: number | null; maxProducts?: number | null; maxWarehouses?: number | null }
+      | null) ?? {};
+  const plan = company?.subscriptionPlan ?? "free";
 
   const [users, products, warehouses] = await Promise.all([
     ctx.prisma.user.count({ where: { companyId: ctx.companyId } }),
@@ -202,9 +206,9 @@ export const getPlanLimits = withAuth<void, PlanLimits>(async (ctx) => {
   ]);
 
   return ok({
-    maxUsers: limits.maxUsers ?? company?.maxUsers ?? null,
-    maxProducts: limits.maxProducts ?? null,
-    maxWarehouses: limits.maxWarehouses ?? null,
+    maxUsers: override.maxUsers ?? planLimit(plan, "users"),
+    maxProducts: override.maxProducts ?? planLimit(plan, "products"),
+    maxWarehouses: override.maxWarehouses ?? planLimit(plan, "warehouses"),
     currentUsers: users,
     currentProducts: products,
     currentWarehouses: warehouses,

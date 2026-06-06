@@ -3,6 +3,7 @@
 import type { Prisma } from "@prisma/client";
 import { withCompany, ok, parseInput, z } from "@/lib/server";
 import { fromProduct } from "@/lib/mappers";
+import { assertWithinLimit } from "@/lib/billing/enforce";
 
 const bulkImportSchema = z.object({
   rows: z
@@ -80,6 +81,10 @@ export const bulkImportProducts = withCompany<
   const existingBySku = new Map<string, string>(
     existingProducts.map((p) => [p.sku, p.id])
   );
+
+  // Enforce the plan's product limit for the NEW products this import adds.
+  const newCount = rows.filter((r) => !existingBySku.has(r.sku)).length;
+  if (newCount > 0) await assertWithinLimit(ctx, "products", newCount);
 
   let created = 0;
   let updated = 0;
