@@ -6,6 +6,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
 import { OfflineIndicator } from "@/components/shared/offline-indicator";
+import { InstallPWAButton } from "@/components/shared/install-pwa-button";
 import { NotificationsBell } from "@/components/dashboard/notifications-bell";
 import { isMac } from "@/lib/hotkeys";
 import { useEffect, useState } from "react";
@@ -54,6 +55,7 @@ export function DashboardHeader() {
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
+        <InstallPWAButton />
         <OfflineIndicator />
         <NotificationsBell />
         <ThemeToggle />
