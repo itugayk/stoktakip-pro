@@ -18,6 +18,7 @@ import {
   logAudit,
 } from "@/lib/server";
 import { fireWebhookEvent } from "@/lib/webhooks/dispatch";
+import { assertWithinLimit } from "@/lib/billing/enforce";
 
 // ============================================
 // GET PRODUCTS (with stock summary)
@@ -76,6 +77,7 @@ const productInputSchema = z.object({
   purchasePrice: z.number().nonnegative(),
   salePrice: z.number().nonnegative(),
   description: z.string().optional(),
+  tracksSerial: z.boolean().optional(),
 });
 
 export const createProduct = withCompany<
@@ -83,6 +85,7 @@ export const createProduct = withCompany<
   void
 >(async (ctx, raw) => {
   const data = parseInput(productInputSchema, raw);
+  await assertWithinLimit(ctx, "products");
 
   const insert = fromProduct({
     ...data,
@@ -125,6 +128,7 @@ const productUpdateSchema = z.object({
       salePrice: z.number().optional(),
       description: z.string().optional(),
       isActive: z.boolean().optional(),
+      tracksSerial: z.boolean().optional(),
     })
     .refine((v) => Object.keys(v).length > 0, {
       message: "Güncellenecek alan yok",

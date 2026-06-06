@@ -10,6 +10,13 @@ import {
   ERR,
   logAudit,
 } from "@/lib/server";
+import {
+  applyStockMovement,
+  allowNegativeStock,
+  reserveFEFO,
+  releaseReservation,
+} from "@/lib/inventory/engine";
+import { assertModuleEnabled } from "@/lib/modules/guard";
 
 export type POStatus =
   | "draft"
@@ -351,33 +358,19 @@ export const receivePurchaseOrder = withAuth<
       });
       if (!item) continue;
 
-      await tx.stockMovement.create({
-        data: {
-          companyId: order.companyId,
-          productId: item.productId,
-          movementType: "in",
-          quantity: line.quantity,
-          toWarehouseId: order.warehouseId,
-          lotNumber: line.lotNumber ?? null,
-          expiryDate: line.expiryDate ?? null,
-          unitCost: item.unitPrice,
-          reason: "purchase_order_receive",
-          referenceType: "purchase_order",
-          referenceNumber: orderId,
-          userId: ctx.userId,
-        },
-      });
-
-      await tx.inventory.create({
-        data: {
-          companyId: order.companyId,
-          productId: item.productId,
-          warehouseId: order.warehouseId,
-          lotNumber: line.lotNumber ?? null,
-          expiryDate: line.expiryDate ?? null,
-          quantity: line.quantity,
-          unitCost: item.unitPrice,
-        },
+      await applyStockMovement(tx, {
+        companyId: order.companyId,
+        productId: item.productId,
+        movementType: "in",
+        quantity: line.quantity,
+        toWarehouseId: order.warehouseId,
+        lotNumber: line.lotNumber ?? null,
+        expiryDate: line.expiryDate ?? null,
+        unitCost: Number(item.unitPrice),
+        reason: "purchase_order_receive",
+        referenceType: "purchase_order",
+        referenceNumber: orderId,
+        userId: ctx.userId,
       });
 
       await tx.purchaseOrderItem.update({
@@ -449,6 +442,27 @@ export const recordPick = withAuth<z.input<typeof pickSchema>, void>(
     });
     if (!order) throw ERR.notFound("Sipariş");
 
+    // Don't allow picking more than was ordered.
+    const orderItems = await ctx.prisma.salesOrderItem.findMany({
+      where: { orderId },
+      select: { id: true, quantity: true },
+    });
+    const orderedById = new Map(
+      orderItems.map((i) => [i.id, Number(i.quantity)])
+    );
+    for (const ln of lines) {
+      const ordered = orderedById.get(ln.itemId);
+      if (ordered === undefined) {
+        return fail("validation", "Sipariş kalemi bulunamadı");
+      }
+      if (ln.pickedQty > ordered) {
+        return fail(
+          "validation",
+          `Toplanan miktar (${ln.pickedQty}) sipariş miktarını (${ordered}) aşamaz`
+        );
+      }
+    }
+
     await ctx.prisma.$transaction(async (tx) => {
       for (const ln of lines) {
         await tx.salesOrderItem.updateMany({
@@ -509,10 +523,10 @@ export const shipSalesOrder = withAuth<
     },
   });
   if (!order) throw ERR.notFound("Sipariş");
-  if (order.status !== "approved" && order.status !== "pending") {
+  if (order.status !== "approved") {
     return fail(
       "invalid_state",
-      "Sadece onaylı veya hazır siparişler sevkedilebilir"
+      "Sadece onaylı siparişler sevkedilebilir"
     );
   }
 
@@ -528,25 +542,35 @@ export const shipSalesOrder = withAuth<
     },
   });
 
+  // FEFO consumption inside one transaction. If any line is short on stock the
+  // engine throws InsufficientStockError and the whole shipment rolls back.
   const movementsCreated = await ctx.prisma.$transaction(async (tx) => {
+    const allowNegative = await allowNegativeStock(tx, order.companyId);
     let count = 0;
     for (const item of items) {
       const qty = Number(item.pickedQty) || Number(item.quantity);
       if (qty <= 0) continue;
-      await tx.stockMovement.create({
-        data: {
-          companyId: order.companyId,
-          productId: item.productId,
-          movementType: "out",
-          quantity: qty,
-          fromWarehouseId: order.warehouseId,
-          lotNumber: item.lotNumber ?? null,
-          unitCost: item.unitPrice,
-          reason: "sales_order_ship",
-          referenceType: "sales_order",
-          referenceNumber: data.orderId,
-          userId: ctx.userId,
-        },
+      // Release the stock this order reserved at approval time, then consume.
+      // We release the full ordered quantity (any unshipped remainder is freed)
+      // so reservations don't leak after the order is closed.
+      await releaseReservation(tx, {
+        companyId: order.companyId,
+        productId: item.productId,
+        warehouseId: order.warehouseId,
+        quantity: Number(item.quantity),
+      });
+      await applyStockMovement(tx, {
+        companyId: order.companyId,
+        productId: item.productId,
+        movementType: "out",
+        quantity: qty,
+        fromWarehouseId: order.warehouseId,
+        lotNumber: item.lotNumber ?? null,
+        reason: "sales_order_ship",
+        referenceType: "sales_order",
+        referenceNumber: data.orderId,
+        userId: ctx.userId,
+        allowNegative,
       });
       count++;
     }
@@ -586,6 +610,273 @@ export const shipSalesOrder = withAuth<
 
   return ok({ movementsCreated });
 });
+
+// ============================================
+// 4.5 — SALES ORDER: CREATE / LIST / APPROVE / CANCEL
+// ============================================
+
+export interface SalesOrderRow {
+  id: string;
+  orderNumber: string;
+  customerId: string;
+  customerName: string;
+  warehouseId: string;
+  status: SOStatus;
+  totalAmount: number;
+  itemCount: number;
+  createdAt: string;
+  pickedAt: string | null;
+  notes: string | null;
+}
+
+export const getSalesOrders = withAuth<
+  { status?: SOStatus; search?: string } | undefined,
+  SalesOrderRow[]
+>(async (ctx, filters) => {
+  const rows = await ctx.prisma.salesOrder.findMany({
+    where: {
+      companyId: ctx.companyId,
+      ...(filters?.status ? { status: filters.status } : {}),
+      ...(filters?.search
+        ? {
+            OR: [
+              { orderNumber: { contains: filters.search, mode: "insensitive" } },
+              {
+                customer: {
+                  name: { contains: filters.search, mode: "insensitive" },
+                },
+              },
+            ],
+          }
+        : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    include: {
+      customer: { select: { name: true } },
+      _count: { select: { items: true } },
+    },
+  });
+
+  return ok(
+    rows.map((o) => ({
+      id: o.id,
+      orderNumber: o.orderNumber,
+      customerId: o.customerId,
+      customerName: o.customer?.name ?? "—",
+      warehouseId: o.warehouseId,
+      status: o.status as SOStatus,
+      totalAmount: Number(o.totalAmount),
+      itemCount: o._count.items,
+      createdAt: o.createdAt.toISOString(),
+      pickedAt: o.pickedAt?.toISOString() ?? null,
+      notes: o.notes ?? null,
+    }))
+  );
+});
+
+const createSOSchema = z.object({
+  customerId: z.string().min(1, "Müşteri seçin"),
+  warehouseId: z.string().min(1, "Depo seçin"),
+  notes: z.string().optional(),
+  items: z
+    .array(
+      z.object({
+        productId: z.string(),
+        quantity: z.number().positive("Miktar 0'dan büyük olmalı"),
+        unitPrice: z.number().nonnegative().optional(),
+        lotNumber: z.string().optional(),
+      })
+    )
+    .min(1, "En az bir kalem ekleyin"),
+});
+
+export const createSalesOrder = withAuth<
+  z.input<typeof createSOSchema>,
+  { orderId: string }
+>(async (ctx, raw) => {
+  await assertModuleEnabled(ctx, "sales");
+  const data = parseInput(createSOSchema, raw);
+
+  const [customer, warehouse, products] = await Promise.all([
+    ctx.prisma.customer.findFirst({
+      where: { id: data.customerId, companyId: ctx.companyId },
+      select: { id: true },
+    }),
+    ctx.prisma.warehouse.findFirst({
+      where: { id: data.warehouseId, companyId: ctx.companyId },
+      select: { id: true },
+    }),
+    ctx.prisma.product.findMany({
+      where: {
+        companyId: ctx.companyId,
+        id: { in: data.items.map((i) => i.productId) },
+      },
+      select: { id: true, salePrice: true, taxRate: true },
+    }),
+  ]);
+  if (!customer) throw ERR.notFound("Müşteri");
+  if (!warehouse) throw ERR.notFound("Depo");
+
+  const priceById = new Map(
+    products.map((p) => [
+      p.id,
+      { sale: Number(p.salePrice), tax: Number(p.taxRate) },
+    ])
+  );
+
+  let subtotal = 0;
+  let taxAmount = 0;
+  const itemData = data.items.map((it) => {
+    const p = priceById.get(it.productId);
+    if (!p) throw ERR.notFound("Ürün");
+    const unitPrice = it.unitPrice ?? p.sale;
+    const lineTotal = unitPrice * it.quantity;
+    subtotal += lineTotal;
+    taxAmount += lineTotal * (p.tax / 100);
+    return {
+      productId: it.productId,
+      quantity: it.quantity,
+      unitPrice,
+      taxRate: p.tax,
+      total: lineTotal,
+      lotNumber: it.lotNumber ?? null,
+    };
+  });
+
+  const orderNumber = `SO-${Date.now().toString().slice(-8)}`;
+
+  const order = await ctx.prisma.salesOrder.create({
+    data: {
+      companyId: ctx.companyId,
+      customerId: data.customerId,
+      warehouseId: data.warehouseId,
+      orderNumber,
+      status: "pending",
+      subtotal,
+      taxAmount,
+      totalAmount: subtotal + taxAmount,
+      notes: data.notes ?? null,
+      userId: ctx.userId,
+      items: { create: itemData },
+    },
+    select: { id: true },
+  });
+
+  await logAudit(ctx, {
+    action: "create",
+    table: "sales_orders",
+    recordId: order.id,
+    newData: { orderNumber, status: "pending" },
+  });
+
+  return ok({ orderId: order.id });
+});
+
+/**
+ * Approve a sales order: reserves stock for each line (FEFO) so it's held for
+ * this customer, then moves the order to `approved`. Fails the whole approval if
+ * any line is short on stock. Restricted to admin + manager.
+ */
+export const approveSalesOrder = withRole<z.input<typeof idSchema>, void>(
+  ["admin", "manager"],
+  async (ctx, raw) => {
+    const { orderId } = parseInput(idSchema, raw);
+
+    const order = await ctx.prisma.salesOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: {
+        id: true,
+        status: true,
+        warehouseId: true,
+        companyId: true,
+        items: { select: { productId: true, quantity: true } },
+      },
+    });
+    if (!order) throw ERR.notFound("Sipariş");
+    if (order.status !== "pending") {
+      return fail(
+        "invalid_state",
+        "Sadece onay bekleyen siparişler onaylanabilir"
+      );
+    }
+
+    await ctx.prisma.$transaction(async (tx) => {
+      const allowNegative = await allowNegativeStock(tx, order.companyId);
+      for (const it of order.items) {
+        await reserveFEFO(tx, {
+          companyId: order.companyId,
+          productId: it.productId,
+          warehouseId: order.warehouseId,
+          quantity: Number(it.quantity),
+          allowNegative,
+        });
+      }
+      await tx.salesOrder.update({
+        where: { id: orderId },
+        data: { status: "approved" },
+      });
+    });
+
+    await logAudit(ctx, {
+      action: "approve",
+      table: "sales_orders",
+      recordId: orderId,
+      newData: { status: "approved" },
+    });
+    return ok();
+  }
+);
+
+/** Cancel a sales order, releasing any stock it had reserved. */
+export const cancelSalesOrder = withAuth<z.input<typeof idSchema>, void>(
+  async (ctx, raw) => {
+    const { orderId } = parseInput(idSchema, raw);
+
+    const order = await ctx.prisma.salesOrder.findFirst({
+      where: { id: orderId, companyId: ctx.companyId },
+      select: {
+        id: true,
+        status: true,
+        warehouseId: true,
+        companyId: true,
+        items: { select: { productId: true, quantity: true } },
+      },
+    });
+    if (!order) throw ERR.notFound("Sipariş");
+    if (
+      order.status === "shipped" ||
+      order.status === "delivered" ||
+      order.status === "cancelled"
+    ) {
+      return fail("invalid_state", "Bu sipariş iptal edilemez");
+    }
+
+    await ctx.prisma.$transaction(async (tx) => {
+      if (order.status === "approved") {
+        for (const it of order.items) {
+          await releaseReservation(tx, {
+            companyId: order.companyId,
+            productId: it.productId,
+            warehouseId: order.warehouseId,
+            quantity: Number(it.quantity),
+          });
+        }
+      }
+      await tx.salesOrder.update({
+        where: { id: orderId },
+        data: { status: "cancelled" },
+      });
+    });
+
+    await logAudit(ctx, {
+      action: "update",
+      table: "sales_orders",
+      recordId: orderId,
+      newData: { status: "cancelled" },
+    });
+    return ok();
+  }
+);
 
 // ============================================
 // 4.10 — OPERATIONS DASHBOARD (counts of open work)

@@ -1,6 +1,7 @@
 "use server";
 
 import { withCompany, ok, parseInput, z, ERR } from "@/lib/server";
+import { applyStockMovement } from "@/lib/inventory/engine";
 
 export type CountStatus =
   | "open"
@@ -209,20 +210,22 @@ export const closeCount = withCompany<
     for (const it of items) {
       const variance = Number(it.variance ?? 0);
       if (variance === 0) continue;
-      await tx.stockMovement.create({
-        data: {
-          companyId: count.companyId,
-          productId: it.productId,
-          movementType: "adjustment",
-          quantity: Math.abs(variance),
-          fromWarehouseId: variance < 0 ? count.warehouseId : null,
-          toWarehouseId: variance > 0 ? count.warehouseId : null,
-          lotNumber: it.lotNumber ?? null,
-          reason: "stock_count_adjustment",
-          referenceType: "stock_count",
-          referenceNumber: data.countId,
-          userId: ctx.userId,
-        },
+      // Reconcile inventory to the counted quantity: a positive variance adds
+      // stock, a negative variance removes it. Count adjustments always apply
+      // (allowNegative) — the count IS the source of truth here.
+      await applyStockMovement(tx, {
+        companyId: count.companyId,
+        productId: it.productId,
+        movementType: "adjustment",
+        quantity: Math.abs(variance),
+        fromWarehouseId: variance < 0 ? count.warehouseId : null,
+        toWarehouseId: variance > 0 ? count.warehouseId : null,
+        lotNumber: it.lotNumber ?? null,
+        reason: "stock_count_adjustment",
+        referenceType: "stock_count",
+        referenceNumber: data.countId,
+        userId: ctx.userId,
+        allowNegative: true,
       });
       created++;
     }

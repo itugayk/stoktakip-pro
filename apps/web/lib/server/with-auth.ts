@@ -35,6 +35,17 @@ function handleError(e: unknown): Result<never> {
     }
     return fail(e.code, e.message, e.field);
   }
+  // Engine errors (insufficient stock, bad movement config) carry a typed `code`
+  // and a user-facing Turkish message — surface them as clean failures.
+  if (
+    e !== null &&
+    typeof e === "object" &&
+    "code" in e &&
+    typeof (e as { code: unknown }).code === "string" &&
+    e instanceof Error
+  ) {
+    return fail((e as { code: string }).code, e.message);
+  }
   log.error(e, { source: "withAuth" });
   const msg = e instanceof Error ? e.message : "Beklenmeyen bir hata oluştu";
   return fail("internal", msg);

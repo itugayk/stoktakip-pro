@@ -2,6 +2,7 @@
 
 import { withRole, withAuth, ok, fail, parseInput, z } from "@/lib/server";
 import type { UserRole } from "@/lib/types";
+import { assertWithinLimit } from "@/lib/billing/enforce";
 
 export interface Invitation {
   id: string;
@@ -60,28 +61,8 @@ export const createInvitation = withRole<
 >(["admin"], async (ctx, raw) => {
   const data = parseInput(createSchema, raw);
 
-  // Check user limit before issuing the invite.
-  const company = await ctx.prisma.company.findUnique({
-    where: { id: ctx.companyId },
-    select: { maxUsers: true, subscriptionLimits: true },
-  });
-  const limits =
-    (company?.subscriptionLimits as { maxUsers?: number } | null) ?? {};
-  const hardLimit = limits.maxUsers ?? company?.maxUsers ?? null;
-  if (hardLimit !== null) {
-    const [userCount, pendingCount] = await Promise.all([
-      ctx.prisma.user.count({ where: { companyId: ctx.companyId } }),
-      ctx.prisma.invitation.count({
-        where: { companyId: ctx.companyId, acceptedAt: null },
-      }),
-    ]);
-    if (userCount + pendingCount >= hardLimit) {
-      return fail(
-        "plan_limit",
-        `Plan kullanıcı sınırına ulaştınız (${hardLimit}).`
-      );
-    }
-  }
+  // Plan seat limit (active users + pending invites) — single source of truth.
+  await assertWithinLimit(ctx, "users");
 
   const token = randomToken();
   await ctx.prisma.invitation.upsert({

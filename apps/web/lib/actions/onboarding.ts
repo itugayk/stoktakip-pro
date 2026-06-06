@@ -5,6 +5,9 @@ import { withCompany, ok, parseInput, z } from "@/lib/server";
 import { fromCategory, fromProduct, fromWarehouse } from "@/lib/mappers";
 
 const onboardingSchema = z.object({
+  businessType: z
+    .enum(["general", "market", "pharmacy", "restaurant", "wholesale"])
+    .default("general"),
   company: z.object({
     name: z.string().min(1, "Şirket adı zorunlu"),
     taxId: z.string().optional(),
@@ -61,7 +64,13 @@ export const completeOnboarding = withCompany<
         phone: data.company.phone || null,
         address: data.company.address || null,
         logoUrl: data.company.logoUrl || null,
-        settings: { onboarding_completed_at: new Date().toISOString() },
+        // Store only business_type; the enabled-module set is derived from the
+        // preset (resolveEnabledModules) so it tracks preset changes. Admins can
+        // later override per-module from the business settings page.
+        settings: {
+          onboarding_completed_at: new Date().toISOString(),
+          business_type: data.businessType,
+        },
       },
     });
 

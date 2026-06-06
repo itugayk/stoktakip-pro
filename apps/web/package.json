@@ -19,6 +19,7 @@
     "db:push": "prisma db push",
     "db:reset": "prisma migrate reset",
     "db:seed": "tsx prisma/seed.ts",
+    "db:recompute": "tsx scripts/recompute-inventory.ts",
     "db:studio": "prisma studio",
     "db:apply-raw:1": "prisma db execute --file prisma/sql/01_extensions_triggers.sql --schema prisma/schema.prisma",
     "db:apply-raw:2": "prisma db execute --file prisma/sql/02_views.sql --schema prisma/schema.prisma",

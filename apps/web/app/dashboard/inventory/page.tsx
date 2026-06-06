@@ -65,7 +65,7 @@ export default function InventoryPage() {
 
   const [form, setForm] = useState({
     productId: "", warehouseId: "", toWarehouseId: "",
-    quantity: "", lotNumber: "", expiryDate: "", reason: "", reference: "",
+    quantity: "", lotNumber: "", serialNumber: "", expiryDate: "", reason: "", reference: "",
   });
 
   const filtered = useMemo(() => {
@@ -82,7 +82,7 @@ export default function InventoryPage() {
 
   const openAdd = (type: MovementType) => {
     setMoveType(type);
-    setForm({ productId: "", warehouseId: "", toWarehouseId: "", quantity: "", lotNumber: "", expiryDate: "", reason: "", reference: "" });
+    setForm({ productId: "", warehouseId: "", toWarehouseId: "", quantity: "", lotNumber: "", serialNumber: "", expiryDate: "", reason: "", reference: "" });
     setShowAddDialog(true);
   };
 
@@ -95,7 +95,8 @@ export default function InventoryPage() {
     const result = await createStockMovement({
       productId: prod.id, type: moveType, quantity: parseInt(form.quantity),
       warehouseId: wh.id, toWarehouseId: toWh?.id,
-      lotNumber: form.lotNumber || undefined, expiryDate: form.expiryDate || undefined,
+      lotNumber: form.lotNumber || undefined, serialNumber: form.serialNumber || undefined,
+      expiryDate: form.expiryDate || undefined,
       reason: form.reason || undefined, reference: form.reference || undefined,
     });
 
@@ -317,6 +318,10 @@ export default function InventoryPage() {
                 <Label>SKT</Label>
                 <Input type="date" value={form.expiryDate} onChange={(e) => setForm({ ...form, expiryDate: e.target.value })} />
               </div>
+            </div>
+            <div className="grid gap-2">
+              <Label>Seri No (varsa)</Label>
+              <Input value={form.serialNumber} onChange={(e) => setForm({ ...form, serialNumber: e.target.value })} placeholder="SN-000123" className="font-mono" />
             </div>
             <div className="grid gap-2">
               <Label>Sebep</Label>
