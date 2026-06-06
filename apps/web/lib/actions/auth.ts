@@ -6,6 +6,12 @@ import bcrypt from "bcryptjs";
 import { auth, signIn as nextAuthSignIn, signOut as nextAuthSignOut } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ok, fail, parseInput, z, type Result } from "@/lib/server";
+import type { BusinessType, ModuleKey } from "@/lib/modules/registry";
+import {
+  resolveBusinessType,
+  resolveEnabledModules,
+  type CompanySettings,
+} from "@/lib/company/settings";
 
 // ============================================
 // SIGN IN
@@ -147,14 +153,19 @@ export interface CurrentUser {
   fullName: string;
   role: "admin" | "manager" | "warehouse_staff" | "viewer";
   avatarUrl?: string;
-  company: { id: string; name: string };
+  company: {
+    id: string;
+    name: string;
+    businessType: BusinessType;
+    enabledModules: ModuleKey[];
+  };
 }
 
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  // Pull fresh profile + company in one round-trip.
+  // Pull fresh profile + company (incl. settings for module gating) in one trip.
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
     select: {
@@ -163,10 +174,12 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       fullName: true,
       role: true,
       avatarUrl: true,
-      company: { select: { id: true, name: true } },
+      company: { select: { id: true, name: true, settings: true } },
     },
   });
   if (!user) return null;
+
+  const settings = (user.company.settings as CompanySettings | null) ?? {};
 
   return {
     id: user.id,
@@ -174,7 +187,12 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     fullName: user.fullName,
     role: user.role,
     avatarUrl: user.avatarUrl ?? undefined,
-    company: { id: user.company.id, name: user.company.name },
+    company: {
+      id: user.company.id,
+      name: user.company.name,
+      businessType: resolveBusinessType(settings),
+      enabledModules: resolveEnabledModules(settings),
+    },
   };
 }
 

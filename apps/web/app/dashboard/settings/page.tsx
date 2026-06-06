@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useTheme } from "next-themes";
-import { Sun, Moon, Monitor, Globe, Shield, Bell, Palette } from "lucide-react";
+import { Sun, Moon, Monitor, Globe, Shield, Bell, Palette, Store, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,24 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 animate-fade-in max-w-2xl">
       <PageHeader title="Ayarlar" description="Uygulama tercihlerinizi yönetin" />
+
+      {/* Business type & modules */}
+      <Link href="/dashboard/settings/business" className="block">
+        <Card className="transition-colors hover:bg-muted/40">
+          <CardContent className="flex items-center gap-3 p-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Store className="h-5 w-5" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium">İşletme Tipi & Modüller</p>
+              <p className="text-xs text-muted-foreground">
+                Sektörünüze uygun paneli seçin, modülleri aç/kapat yapın
+              </p>
+            </div>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Theme */}
       <Card>

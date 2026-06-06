@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Tag,
   Plug,
+  ChefHat,
 } from "lucide-react";
 import {
   Sidebar,
@@ -46,6 +47,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { getCurrentUser, signOut } from "@/lib/actions/auth";
+import {
+  ALL_MODULES,
+  isHrefEnabled,
+  term,
+  type BusinessType,
+  type ModuleKey,
+} from "@/lib/modules/registry";
 
 type UserInfo = { fullName: string; email: string; initials: string };
 
@@ -53,6 +61,10 @@ export function AppSidebar() {
   const pathname = usePathname();
   const t = useTranslations("nav");
   const [user, setUser] = useState<UserInfo>({ fullName: "Admin", email: "admin@stoktakip.com", initials: "AD" });
+  // Optimistic: show everything until we know the company's enabled set, then
+  // trim. Avoids a broken-looking near-empty menu on first paint.
+  const [modules, setModules] = useState<ModuleKey[]>(ALL_MODULES);
+  const [businessType, setBusinessType] = useState<BusinessType>("general");
 
   useEffect(() => {
     getCurrentUser().then((u) => {
@@ -60,20 +72,23 @@ export function AppSidebar() {
         const parts = u.fullName.split(" ");
         const initials = parts.length >= 2 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : u.fullName.slice(0, 2).toUpperCase();
         setUser({ fullName: u.fullName, email: u.email, initials });
+        setModules(u.company.enabledModules);
+        setBusinessType(u.company.businessType);
       }
     });
   }, []);
 
   const mainNav = [
     { href: "/dashboard", label: t("dashboard"), icon: LayoutDashboard, exact: true },
-    { href: "/dashboard/products", label: t("products"), icon: Package },
-    { href: "/dashboard/categories", label: "Kategoriler", icon: Tag },
+    { href: "/dashboard/products", label: term(businessType, "products", t("products")), icon: Package },
+    { href: "/dashboard/categories", label: term(businessType, "categories", "Kategoriler"), icon: Tag },
     { href: "/dashboard/scanner", label: t("scanner"), icon: ScanLine },
   ];
 
   const inventoryNav = [
     { href: "/dashboard/inventory", label: t("stockMovements"), icon: ArrowRightLeft, exact: true },
     { href: "/dashboard/inventory/expiry", label: t("expiryTracking"), icon: CalendarClock },
+    { href: "/dashboard/recipes", label: "Reçeteler", icon: ChefHat },
     { href: "/dashboard/counts", label: "Sayımlar", icon: ClipboardList },
     { href: "/dashboard/reorder", label: "Sipariş Önerileri", icon: PackagePlus },
   ];
@@ -105,7 +120,13 @@ export function AppSidebar() {
     return pathname === item.href || pathname.startsWith(item.href + "/");
   };
 
-  const renderGroup = (items: NavItem[], label?: string) => (
+  const visible = (items: NavItem[]) =>
+    items.filter((item) => isHrefEnabled(item.href, modules));
+
+  const renderGroup = (rawItems: NavItem[], label?: string) => {
+    const items = visible(rawItems);
+    if (items.length === 0) return null;
+    return (
     <SidebarGroup>
       {label && (
         <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.1em] font-semibold text-muted-foreground/60 px-3 mb-1">
@@ -138,7 +159,8 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
-  );
+    );
+  };
 
   return (
     <Sidebar collapsible="icon" variant="sidebar" className="border-r-0">

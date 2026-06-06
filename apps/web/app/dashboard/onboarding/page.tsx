@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Building2, Warehouse, Tag as TagIcon, Package, Loader2, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Building2, Warehouse, Tag as TagIcon, Package, Loader2, Plus, Trash2, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,13 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/shared";
 import { completeOnboarding } from "@/lib/actions";
 import { cn } from "@/lib/utils";
+import { BUSINESS_PRESETS, BUSINESS_TYPES, type BusinessType } from "@/lib/modules/registry";
+
+/** Sector → matching category template label (auto-applied on selection). */
+const SECTOR_TEMPLATE: Partial<Record<BusinessType, string>> = {
+  market: "Gıda / Market",
+  pharmacy: "Eczane / Sağlık",
+};
 
 interface CategorySeed {
   name: string;
@@ -61,12 +68,15 @@ const EMPTY_PRODUCT: ProductSeed = {
   name: "", sku: "", unit: "adet", purchasePrice: "", salePrice: "", minStock: "10",
 };
 
-type Step = 0 | 1 | 2 | 3;
+type Step = 0 | 1 | 2 | 3 | 4;
+const LAST_STEP: Step = 4;
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>(0);
   const [submitting, setSubmitting] = useState(false);
+
+  const [businessType, setBusinessType] = useState<BusinessType>("general");
 
   const [company, setCompany] = useState({
     name: "", taxId: "", phone: "", address: "", logoUrl: "",
@@ -81,10 +91,11 @@ export default function OnboardingPage() {
   ]);
 
   const canNext = (() => {
-    if (step === 0) return company.name.trim().length > 0;
-    if (step === 1) return warehouse.name.trim().length > 0;
-    if (step === 2) return categories.length > 0;
-    if (step === 3) return products.every((p) => !p.name || (p.name && p.sku));
+    if (step === 0) return true; // sector always has a value
+    if (step === 1) return company.name.trim().length > 0;
+    if (step === 2) return warehouse.name.trim().length > 0;
+    if (step === 3) return categories.length > 0;
+    if (step === 4) return products.every((p) => !p.name || (p.name && p.sku));
     return false;
   })();
 
@@ -93,6 +104,13 @@ export default function OnboardingPage() {
       const existing = new Set(prev.map((c) => c.name));
       return [...prev, ...cats.filter((c) => !existing.has(c.name))];
     });
+  };
+
+  const pickBusinessType = (bt: BusinessType) => {
+    setBusinessType(bt);
+    const tplLabel = SECTOR_TEMPLATE[bt];
+    const tpl = tplLabel ? CATEGORY_TEMPLATES.find((t) => t.label === tplLabel) : undefined;
+    if (tpl) applyTemplate(tpl.categories);
   };
 
   const submit = async () => {
@@ -121,6 +139,7 @@ export default function OnboardingPage() {
           minStock: parseInt(p.minStock) || 0,
           maxStock: 0,
         })),
+      businessType,
     };
 
     const result = await completeOnboarding(payload);
@@ -137,6 +156,7 @@ export default function OnboardingPage() {
   };
 
   const steps = [
+    { label: "Sektör", icon: Store },
     { label: "Şirket", icon: Building2 },
     { label: "Depo", icon: Warehouse },
     { label: "Kategori", icon: TagIcon },
@@ -182,6 +202,41 @@ export default function OnboardingPage() {
       <Card>
         <CardContent className="p-6">
           {step === 0 && (
+            <div className="grid gap-4">
+              <h2 className="font-semibold">İşletme Tipiniz</h2>
+              <p className="text-sm text-muted-foreground">
+                Sektörünüze göre size uygun modüller açılır, gereksizler gizlenir.
+                Sonradan Ayarlar &gt; İşletme'den değiştirebilirsiniz.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {BUSINESS_TYPES.map((bt) => {
+                  const preset = BUSINESS_PRESETS[bt];
+                  const active = businessType === bt;
+                  return (
+                    <button
+                      key={bt}
+                      type="button"
+                      onClick={() => pickBusinessType(bt)}
+                      className={cn(
+                        "text-left rounded-lg border p-3 transition-colors",
+                        active
+                          ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                          : "hover:bg-muted/50"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm">{preset.label}</span>
+                        {active && <Check className="h-4 w-4 text-primary" />}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{preset.description}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {step === 1 && (
             <div className="grid gap-4">
               <h2 className="font-semibold">Şirket Bilgileri</h2>
               <div className="grid gap-2">
@@ -230,7 +285,7 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {step === 1 && (
+          {step === 2 && (
             <div className="grid gap-4">
               <h2 className="font-semibold">İlk Depo</h2>
               <p className="text-sm text-muted-foreground">
@@ -254,7 +309,7 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {step === 2 && (
+          {step === 3 && (
             <div className="grid gap-4">
               <h2 className="font-semibold">Kategoriler</h2>
               <p className="text-sm text-muted-foreground">
@@ -329,7 +384,7 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div className="grid gap-4">
               <h2 className="font-semibold">İlk Ürünler</h2>
               <p className="text-sm text-muted-foreground">
@@ -425,7 +480,7 @@ export default function OnboardingPage() {
           <Button variant="ghost" onClick={() => router.push("/dashboard")} disabled={submitting}>
             Şimdi atla
           </Button>
-          {step < 3 ? (
+          {step < LAST_STEP ? (
             <Button
               onClick={() => setStep((s) => (s + 1) as Step)}
               disabled={!canNext || submitting}
