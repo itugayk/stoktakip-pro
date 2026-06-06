@@ -10,6 +10,8 @@ import {
   ERR,
   logAudit,
 } from "@/lib/server";
+import { applyStockMovement, allowNegativeStock } from "@/lib/inventory/engine";
+import { assertModuleEnabled } from "@/lib/modules/guard";
 
 export type ReturnType = "customer" | "supplier";
 export type ReturnStatus =
@@ -67,6 +69,7 @@ export const createReturn = withAuth<
   z.input<typeof createSchema>,
   { returnId: string }
 >(async (ctx, raw) => {
+  await assertModuleEnabled(ctx, "returns");
   const data = parseInput(createSchema, raw);
 
   if (data.type === "customer" && !data.customerId) {
@@ -214,41 +217,48 @@ export const receiveReturn = withAuth<
   }
 
   const movementsCreated = await ctx.prisma.$transaction(async (tx) => {
+    const allowNegative = await allowNegativeStock(tx, ret.companyId);
     let created = 0;
     for (const it of ret.items) {
       const isCustomer = ret.type === "customer";
+      // Customer returns add stock back (scrap is written off, so no inventory
+      // effect — only an audit movement). Supplier returns ship stock out.
+      const writeOff = isCustomer && it.condition === "scrap";
 
-      await tx.stockMovement.create({
-        data: {
+      if (writeOff) {
+        await tx.stockMovement.create({
+          data: {
+            companyId: ret.companyId,
+            productId: it.productId,
+            movementType: "in",
+            quantity: it.quantity,
+            toWarehouseId: ret.warehouseId,
+            lotNumber: it.lotNumber ?? null,
+            unitCost: it.unitValue,
+            reason: `return_customer_scrap`,
+            referenceType: "return",
+            referenceNumber: returnId,
+            userId: ctx.userId,
+          },
+        });
+      } else {
+        await applyStockMovement(tx, {
           companyId: ret.companyId,
           productId: it.productId,
           movementType: isCustomer ? "in" : "out",
-          quantity: it.quantity,
+          quantity: Number(it.quantity),
           fromWarehouseId: isCustomer ? null : ret.warehouseId,
           toWarehouseId: isCustomer ? ret.warehouseId : null,
           lotNumber: it.lotNumber ?? null,
-          unitCost: it.unitValue,
+          unitCost: it.unitValue != null ? Number(it.unitValue) : null,
           reason: `return_${ret.type}_${it.condition}`,
           referenceType: "return",
           referenceNumber: returnId,
           userId: ctx.userId,
-        },
-      });
-      created++;
-
-      // Customer returns: resellable / damaged also add to inventory; scrap stays out.
-      if (isCustomer && it.condition !== "scrap") {
-        await tx.inventory.create({
-          data: {
-            companyId: ret.companyId,
-            productId: it.productId,
-            warehouseId: ret.warehouseId,
-            lotNumber: it.lotNumber ?? null,
-            quantity: it.quantity,
-            unitCost: it.unitValue ?? 0,
-          },
+          allowNegative,
         });
       }
+      created++;
     }
 
     await tx.return.update({
