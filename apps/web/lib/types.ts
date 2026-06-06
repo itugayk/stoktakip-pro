@@ -45,6 +45,10 @@ export interface Product {
 
 export interface ProductWithStock extends Product {
   currentStock: number;
+  /** Quantity held for approved sales orders (not yet shipped). */
+  reservedStock: number;
+  /** currentStock − reservedStock: what's actually sellable right now. */
+  availableStock: number;
   categoryName: string;
   stockStatus: "ok" | "low" | "critical" | "overstock";
 }

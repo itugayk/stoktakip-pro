@@ -98,3 +98,48 @@ export const requestCompanyDeletion = withRole<
 
   return ok({ scheduled: true });
 });
+
+/**
+ * Immediately and permanently delete the company and ALL its data. Intended for
+ * the free testing phase ("oluştur, dene, sil"). Irreversible.
+ *
+ * We delete in FK-safe order inside a transaction: rows that hold `onDelete:
+ * Restrict` references to products/customers/suppliers/warehouses (movements,
+ * orders, returns, counts, price lists, inventory) go first, then
+ * `company.delete()` cascades everything else. The caller should sign the user
+ * out afterwards.
+ */
+export const hardDeleteCompany = withRole<
+  z.input<typeof deleteSchema>,
+  { deleted: boolean }
+>(["admin"], async (ctx, raw) => {
+  const data = parseInput(deleteSchema, raw);
+
+  const company = await ctx.prisma.company.findUnique({
+    where: { id: ctx.companyId },
+    select: { name: true },
+  });
+  if (!company) throw ERR.notFound("Şirket");
+  if (company.name !== data.confirmCompanyName) {
+    throw ERR.validation("Şirket adı eşleşmedi");
+  }
+
+  const companyId = ctx.companyId;
+  await ctx.prisma.$transaction(async (tx) => {
+    // 1) Rows that restrict-reference catalog entities (must go before cascade).
+    await tx.stockMovement.deleteMany({ where: { companyId } });
+    await tx.inventory.deleteMany({ where: { companyId } });
+    // 2) Orders / returns / counts / price lists cascade their own line items.
+    await tx.salesOrder.deleteMany({ where: { companyId } });
+    await tx.purchaseOrder.deleteMany({ where: { companyId } });
+    await tx.return.deleteMany({ where: { companyId } });
+    await tx.stockCount.deleteMany({ where: { companyId } });
+    await tx.priceList.deleteMany({ where: { companyId } });
+    await tx.orderTemplate.deleteMany({ where: { companyId } });
+    await tx.warehouseLocation.deleteMany({ where: { warehouse: { companyId } } });
+    // 3) Catalog + everything else cascades from the company row.
+    await tx.company.delete({ where: { id: companyId } });
+  });
+
+  return ok({ deleted: true });
+});

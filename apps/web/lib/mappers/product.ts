@@ -36,7 +36,7 @@ export function toProduct(row: PrismaProduct): Product {
 }
 
 export function fromProduct(
-  p: Partial<Product> & { companyId?: string }
+  p: Partial<Product> & { companyId?: string; tracksSerial?: boolean }
 ): Partial<ProductCreate> {
   const out: Partial<ProductCreate> = {};
   if (p.companyId !== undefined) out.companyId = p.companyId;
@@ -52,6 +52,7 @@ export function fromProduct(
   if (p.salePrice !== undefined) out.salePrice = p.salePrice;
   if (p.imageUrl !== undefined) out.imageUrl = p.imageUrl || null;
   if (p.isActive !== undefined) out.isActive = p.isActive;
+  if (p.tracksSerial !== undefined) out.tracksSerial = p.tracksSerial;
   return out;
 }
 
@@ -74,6 +75,8 @@ export function toProductWithStock(row: ProductSummaryRow): ProductWithStock {
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     currentStock: d(row.currentStock),
+    reservedStock: d(row.reservedStock),
+    availableStock: d(row.currentStock) - d(row.reservedStock),
     categoryName: row.categoryName ?? "",
     stockStatus: status,
   };

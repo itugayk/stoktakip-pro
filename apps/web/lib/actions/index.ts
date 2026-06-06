@@ -40,6 +40,21 @@ export type { SearchResults } from "./search";
 
 export { completeOnboarding, getOnboardingStatus } from "./onboarding";
 
+export {
+  listRecipes,
+  getRecipe,
+  upsertRecipe,
+  deleteRecipe,
+  produceRecipe,
+} from "./recipes";
+export type { RecipeRow, RecipeDetail } from "./recipes";
+
+export {
+  getBusinessProfile,
+  updateBusinessProfile,
+} from "./business-profile";
+export type { BusinessProfile } from "./business-profile";
+
 export { toggleFavorite, getFavorites } from "./favorites";
 export type { FavoriteEntity } from "./favorites";
 
@@ -108,9 +123,18 @@ export {
   receivePurchaseOrder,
   recordPick,
   shipSalesOrder,
+  getSalesOrders,
+  createSalesOrder,
+  approveSalesOrder,
+  cancelSalesOrder,
   getOperationsSummary,
 } from "./orders";
-export type { POStatus, SOStatus, OperationsSummary } from "./orders";
+export type {
+  POStatus,
+  SOStatus,
+  OperationsSummary,
+  SalesOrderRow,
+} from "./orders";
 
 export {
   createReturn,
@@ -212,5 +236,9 @@ export {
 } from "./integrations";
 export type { Connection } from "./integrations";
 
-export { exportCompanyData, requestCompanyDeletion } from "./data-export";
+export {
+  exportCompanyData,
+  requestCompanyDeletion,
+  hardDeleteCompany,
+} from "./data-export";
 export type { DataExport } from "./data-export";

@@ -25,7 +25,7 @@ export const demoCategories: Category[] = [
 // ========================
 // Products
 // ========================
-export const demoProducts: ProductWithStock[] = [
+const baseDemoProducts: Omit<ProductWithStock, "reservedStock" | "availableStock">[] = [
   {
     id: "prod-1", name: "Paracetamol 500mg", sku: "ILC-001", barcode: "8691234567890",
     description: "Ağrı kesici ve ateş düşürücü, 20 tablet", categoryId: "cat-1",
@@ -111,6 +111,12 @@ export const demoProducts: ProductWithStock[] = [
     currentStock: 34, categoryName: "Kırtasiye", stockStatus: "ok",
   },
 ];
+
+export const demoProducts: ProductWithStock[] = baseDemoProducts.map((p) => ({
+  ...p,
+  reservedStock: 0,
+  availableStock: p.currentStock,
+}));
 
 // ========================
 // Warehouses

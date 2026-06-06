@@ -319,6 +319,7 @@ export function ProductsPageClient() {
   const [newProduct, setNewProduct] = useState({
     name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "", unit: "adet",
     minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "",
+    tracksSerial: false,
   });
 
   const handleAddDialogOpenChange = (open: boolean) => {
@@ -384,6 +385,7 @@ export function ProductsPageClient() {
       purchasePrice: parseFloat(newProduct.purchasePrice) || 0,
       salePrice: parseFloat(newProduct.salePrice) || 0,
       description: newProduct.description || undefined,
+      tracksSerial: newProduct.tracksSerial,
     });
 
     if (result.ok) {
@@ -395,7 +397,7 @@ export function ProductsPageClient() {
         minStock: parseInt(newProduct.minStock) || 10, maxStock: parseInt(newProduct.maxStock) || 100,
         purchasePrice: parseFloat(newProduct.purchasePrice) || 0, salePrice: parseFloat(newProduct.salePrice) || 0,
         isActive: true, createdAt: new Date().toISOString().split("T")[0], updatedAt: new Date().toISOString().split("T")[0],
-        currentStock: 0, categoryName: cat?.name || "", stockStatus: "critical" as const,
+        currentStock: 0, reservedStock: 0, availableStock: 0, categoryName: cat?.name || "", stockStatus: "critical" as const,
       };
 
       if (isClientDemoMode()) {
@@ -405,7 +407,7 @@ export function ProductsPageClient() {
       setProducts((prev) => [addedProduct, ...prev]);
       setShowAddDialog(false);
       setBarcodeScannerActive(false);
-      setNewProduct({ name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "", unit: "adet", minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "" });
+      setNewProduct({ name: "", sku: "", barcode: "", categoryId: categories[0]?.id || "", unit: "adet", minStock: "10", maxStock: "100", purchasePrice: "", salePrice: "", description: "", tracksSerial: false });
       toast.success("Ürün başarıyla eklendi");
     } else {
       toast.error(result.error.message);
@@ -558,6 +560,11 @@ export function ProductsPageClient() {
           <span className="text-right font-semibold tabular-nums">
             {p.currentStock}{" "}
             <span className="text-xs font-normal text-muted-foreground">{p.unit}</span>
+            {p.reservedStock > 0 && (
+              <span className="block text-[10px] font-normal text-amber-600">
+                {p.availableStock} kullanılabilir · {p.reservedStock} rezerve
+              </span>
+            )}
           </span>
         ),
       },
@@ -856,6 +863,15 @@ export function ProductsPageClient() {
                 <Input type="number" inputMode="decimal" value={newProduct.salePrice} onChange={(e) => setNewProduct({ ...newProduct, salePrice: e.target.value })} className="tabular-nums" />
               </div>
             </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={newProduct.tracksSerial}
+                onChange={(e) => setNewProduct({ ...newProduct, tracksSerial: e.target.checked })}
+                className="h-4 w-4 rounded border-input"
+              />
+              Seri numarası ile takip et (eczane/medikal/elektronik)
+            </label>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => handleAddDialogOpenChange(false)}>İptal</Button>
