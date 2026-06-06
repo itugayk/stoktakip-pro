@@ -4,17 +4,28 @@ import { createStockMovement } from "@/lib/actions";
 import {
   listPending,
   markFailure,
+  markConflict,
   removePending,
   type PendingAction,
 } from "./queue";
 
 const MAX_ATTEMPTS = 5;
 
-type ActionResult = { ok: true } | { ok: false; error: string };
+/**
+ * Server error codes that mean "retrying will never succeed" — a human has to
+ * resolve them. The classic case: two people sold the last unit offline; the
+ * first replay wins, the second is a stock conflict.
+ */
+const CONFLICT_CODES = new Set(["insufficient_stock", "validation", "not_found"]);
+
+type ActionResult =
+  | { ok: true }
+  | { ok: false; error: string; conflict: boolean };
 
 /**
  * Replay one queued action against the corresponding server action. Returns
- * `ok: true` only if the server action confirmed success.
+ * `ok: true` only if the server action confirmed success. The item's `id` is
+ * passed as `clientActionId` so the server applies it at most once.
  */
 async function dispatch(item: PendingAction): Promise<ActionResult> {
   try {
@@ -23,19 +34,33 @@ async function dispatch(item: PendingAction): Promise<ActionResult> {
       case "stock_out":
       case "transfer":
       case "adjustment": {
-        const res = await createStockMovement(
-          item.payload as Parameters<typeof createStockMovement>[0]
-        );
-        return res.ok ? { ok: true } : { ok: false, error: res.error.message };
+        const res = await createStockMovement({
+          ...(item.payload as Parameters<typeof createStockMovement>[0]),
+          clientActionId: item.id,
+        });
+        if (res.ok) return { ok: true };
+        return {
+          ok: false,
+          error: res.error.message,
+          conflict: CONFLICT_CODES.has(res.error.code),
+        };
       }
       case "count":
         // Counting flow has its own action (see Phase 3.3); skip for now.
-        return { ok: false, error: "count replay not implemented" };
+        return { ok: false, error: "count replay not implemented", conflict: false };
       default:
-        return { ok: false, error: `unknown action: ${item.action as string}` };
+        return {
+          ok: false,
+          error: `unknown action: ${item.action as string}`,
+          conflict: true,
+        };
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "unexpected" };
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "unexpected",
+      conflict: false,
+    };
   }
 }
 
@@ -43,6 +68,7 @@ export interface SyncReport {
   attempted: number;
   succeeded: number;
   failed: number;
+  conflicts: number;
 }
 
 /**
@@ -63,23 +89,33 @@ async function doSync(): Promise<SyncReport> {
   const items = await listPending();
   let succeeded = 0;
   let failed = 0;
+  let conflicts = 0;
   for (const item of items) {
-    if (item.attempts >= MAX_ATTEMPTS) {
-      // Drop poison items so the queue doesn't get stuck.
-      await removePending(item.id);
-      failed++;
+    // Already-flagged conflicts wait for the user; don't auto-retry them.
+    if (item.conflict) {
+      conflicts++;
       continue;
     }
     const result = await dispatch(item);
     if (result.ok) {
       await removePending(item.id);
       succeeded++;
+    } else if (result.conflict) {
+      // Business conflict (e.g. stock sold out underneath us). Never silently
+      // drop — flag it so the user can decide what to do.
+      await markConflict(item.id, result.error);
+      conflicts++;
+    } else if (item.attempts + 1 >= MAX_ATTEMPTS) {
+      // Transient errors that won't clear: keep them as a conflict for review
+      // instead of deleting (the old behaviour silently lost data).
+      await markConflict(item.id, `${MAX_ATTEMPTS} denemede gönderilemedi: ${result.error}`);
+      conflicts++;
     } else {
       await markFailure(item.id, result.error);
       failed++;
     }
   }
-  return { attempted: items.length, succeeded, failed };
+  return { attempted: items.length, succeeded, failed, conflicts };
 }
 
 /**

@@ -5,12 +5,20 @@ import Dexie, { type Table } from "dexie";
 export type PendingActionType = "stock_in" | "stock_out" | "transfer" | "count" | "adjustment";
 
 export interface PendingAction {
-  id: string; // uuid
+  id: string; // uuid — also used as the server-side idempotency key (clientActionId)
   action: PendingActionType;
   payload: Record<string, unknown>;
   createdAt: number;
   attempts: number;
   lastError?: string;
+  /**
+   * Set when the server rejected the action for a business reason that retrying
+   * won't fix (e.g. insufficient stock — someone else sold the item first).
+   * Conflicts are NOT auto-retried and NOT silently dropped; the user must
+   * resolve them.
+   */
+  conflict?: boolean;
+  conflictReason?: string;
 }
 
 class OfflineDB extends Dexie {
@@ -65,6 +73,20 @@ export async function markFailure(id: string, error: string): Promise<void> {
   if (!item) return;
   await db().pending.put({ ...item, attempts: item.attempts + 1, lastError: error });
   notifyChange();
+}
+
+/** Flag an item as a business conflict that retrying won't resolve. */
+export async function markConflict(id: string, reason: string): Promise<void> {
+  const item = await db().pending.get(id);
+  if (!item) return;
+  await db().pending.put({ ...item, conflict: true, conflictReason: reason });
+  notifyChange();
+}
+
+/** Number of unresolved conflicts in the queue. */
+export async function countConflicts(): Promise<number> {
+  const items = await db().pending.toArray();
+  return items.filter((i) => i.conflict).length;
 }
 
 export async function clearPending(): Promise<void> {
