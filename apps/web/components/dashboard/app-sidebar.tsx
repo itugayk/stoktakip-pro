@@ -185,7 +185,7 @@ export function AppSidebar() {
         {renderGroup(inventoryNav, "Stok İşlemleri")}
         {renderGroup(operationsNav, "Operasyonlar")}
         {renderGroup(systemNav, "Sistem")}
-        <SidebarGroup className="mt-auto pb-1">
+        <SidebarGroup className="pb-1">
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
