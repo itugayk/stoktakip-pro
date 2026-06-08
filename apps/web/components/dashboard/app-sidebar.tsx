@@ -185,26 +185,22 @@ export function AppSidebar() {
         {renderGroup(inventoryNav, "Stok İşlemleri")}
         {renderGroup(operationsNav, "Operasyonlar")}
         {renderGroup(systemNav, "Sistem")}
-        <SidebarGroup className="pb-1">
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  onClick={() => signOut()}
-                  tooltip="Çıkış Yap"
-                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                >
-                  <LogOut className="h-[18px] w-[18px]" />
-                  <span className="text-[13px]">Çıkış Yap</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
 
       {/* Footer / User */}
       <SidebarFooter className="border-t border-border/50 p-2">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              onClick={() => signOut()}
+              tooltip="Çıkış Yap"
+              className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+            >
+              <LogOut className="h-[18px] w-[18px]" />
+              <span className="text-[13px]">Çıkış Yap</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
