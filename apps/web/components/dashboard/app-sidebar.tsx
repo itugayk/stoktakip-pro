@@ -20,7 +20,6 @@ import {
   PackagePlus,
   PackageMinus,
   LogOut,
-  ChevronRight,
   Tag,
   Plug,
   ChefHat,
@@ -38,15 +37,8 @@ import {
   SidebarFooter,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { getCurrentUser, signOut } from "@/lib/actions/auth";
+import { getCurrentUser } from "@/lib/actions/auth";
 import {
   ALL_MODULES,
   isHrefEnabled,
@@ -187,70 +179,33 @@ export function AppSidebar() {
         {renderGroup(systemNav, "Sistem")}
       </SidebarContent>
 
-      {/* Footer / User */}
-      <SidebarFooter className="border-t border-border/50 p-2">
+      {/* Footer / User + Logout — plain markup, no dropdown.
+          Logout is a real <a href="/logout"> so it works without JS/hydration. */}
+      <SidebarFooter className="border-t border-border/50 p-2 gap-1">
+        <div className="flex items-center gap-3 rounded-lg px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+          <Avatar className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
+            <AvatarFallback className="rounded-lg bg-transparent text-primary text-xs font-bold">
+              {user.initials}
+            </AvatarFallback>
+          </Avatar>
+          <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
+            <span className="truncate font-medium text-[13px]">{user.fullName}</span>
+            <span className="truncate text-[11px] text-muted-foreground">{user.email}</span>
+          </div>
+        </div>
+
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
-              onClick={() => signOut()}
+              asChild
               tooltip="Çıkış Yap"
-              className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10 font-medium"
             >
-              <LogOut className="h-[18px] w-[18px]" />
-              <span className="text-[13px]">Çıkış Yap</span>
+              <a href="/logout">
+                <LogOut className="h-[18px] w-[18px]" />
+                <span className="text-[13px]">Çıkış Yap</span>
+              </a>
             </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  className="hover:bg-muted/60 data-[state=open]:bg-muted/60"
-                >
-                  <Avatar className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
-                    <AvatarFallback className="rounded-lg bg-transparent text-primary text-xs font-bold">
-                      {user.initials}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-medium text-[13px]">{user.fullName}</span>
-                    <span className="truncate text-[11px] text-muted-foreground">{user.email}</span>
-                  </div>
-                  <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground/50" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-xl"
-                align="start"
-              >
-                <div className="flex items-center gap-3 p-3">
-                  <Avatar className="h-10 w-10 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
-                    <AvatarFallback className="rounded-lg bg-transparent text-primary text-sm font-bold">{user.initials}</AvatarFallback>
-                  </Avatar>
-                  <div className="grid text-left text-sm leading-tight">
-                    <span className="font-semibold">{user.fullName}</span>
-                    <span className="text-xs text-muted-foreground">{user.email}</span>
-                  </div>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <Settings className="mr-2 h-4 w-4" />
-                  Hesap Ayarları
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Bell className="mr-2 h-4 w-4" />
-                  Bildirimler
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => signOut()}>
-                  <LogOut className="mr-2 h-4 w-4" />
-                  Çıkış Yap
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
