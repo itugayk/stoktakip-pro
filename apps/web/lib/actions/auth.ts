@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { auth, signIn as nextAuthSignIn, signOut as nextAuthSignOut } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ok, fail, parseInput, z, type Result } from "@/lib/server";
@@ -82,7 +83,7 @@ export async function signUp(
   }
 
   const passwordHash = await bcrypt.hash(data.password, 12);
-  const slug = slugify(data.companyName);
+  const slug = await uniqueSlug(slugify(data.companyName));
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -108,16 +109,17 @@ export async function signUp(
       });
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("Unique constraint")) {
-      if (msg.includes("companies_slug_key")) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      const target = e.meta?.target;
+      const fields = Array.isArray(target) ? target : [target ?? ""];
+      if (fields.includes("slug")) {
         return fail("company_taken", "Bu şirket adı zaten kullanılıyor", "companyName");
       }
-      if (msg.includes("users_email_key")) {
+      if (fields.includes("email")) {
         return fail("email_taken", "Bu e-posta adresi zaten kayıtlı", "email");
       }
     }
-    return fail("signup_failed", "Kayıt sırasında bir hata oluştu: " + msg);
+    return fail("signup_failed", "Kayıt sırasında bir hata oluştu");
   }
 
   // Auto sign-in after signup
@@ -212,4 +214,19 @@ function slugify(s: string): string {
     .replace(/ü/g, "u")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+async function uniqueSlug(base: string): Promise<string> {
+  const existing = await prisma.company.findMany({
+    where: { slug: { startsWith: base } },
+    select: { slug: true },
+  });
+  if (existing.length === 0) return base;
+  const taken = new Set(existing.map((c) => c.slug));
+  if (!taken.has(base)) return base;
+  for (let i = 2; i <= 99; i++) {
+    const candidate = `${base}-${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${base}-${Date.now().toString(36)}`;
 }
