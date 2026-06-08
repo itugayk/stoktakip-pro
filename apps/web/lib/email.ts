@@ -79,6 +79,26 @@ async function send(mail: Mail): Promise<void> {
   return sendViaSmtp(mail);
 }
 
+export async function sendVerificationEmail(to: string, verifyUrl: string): Promise<void> {
+  await send({
+    to,
+    subject: "StokTakip — E-posta doğrulama",
+    text:
+      `Merhaba,\n\n` +
+      `StokTakip hesabınızı oluşturdunuz. Hesabınızı etkinleştirmek ve giriş ` +
+      `yapabilmek için aşağıdaki bağlantıya tıklayarak e-postanızı doğrulayın:\n\n${verifyUrl}\n\n` +
+      `Bu bağlantı 24 saat boyunca geçerlidir. Bu kaydı siz yapmadıysanız bu e-postayı yok sayabilirsiniz.\n`,
+    html:
+      `<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;color:#0f172a">` +
+      `<h2 style="font-size:18px;margin:0 0 16px">E-postanızı doğrulayın</h2>` +
+      `<p style="font-size:14px;line-height:1.6;color:#334155">StokTakip hesabınızı oluşturdunuz. Hesabınızı etkinleştirip giriş yapabilmek için aşağıdaki butona tıklayın:</p>` +
+      `<p style="margin:24px 0"><a href="${verifyUrl}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:600;display:inline-block">E-postamı doğrula</a></p>` +
+      `<p style="font-size:12px;line-height:1.6;color:#64748b">Buton çalışmazsa şu bağlantıyı tarayıcınıza yapıştırın:<br><a href="${verifyUrl}" style="color:#4f46e5;word-break:break-all">${verifyUrl}</a></p>` +
+      `<p style="font-size:12px;line-height:1.6;color:#94a3b8;margin-top:24px">Bu bağlantı 24 saat geçerlidir. Bu kaydı siz yapmadıysanız bu e-postayı yok sayabilirsiniz.</p>` +
+      `</div>`,
+  });
+}
+
 export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
   await send({
     to,

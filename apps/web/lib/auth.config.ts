@@ -29,7 +29,8 @@ export const authConfig = {
         pathname.startsWith("/login") ||
         pathname.startsWith("/register") ||
         pathname.startsWith("/forgot-password") ||
-        pathname.startsWith("/reset-password");
+        pathname.startsWith("/reset-password") ||
+        pathname.startsWith("/verify-email");
       const isPublic =
         pathname === "/" ||
         pathname.startsWith("/api/auth") ||

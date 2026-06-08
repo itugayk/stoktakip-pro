@@ -2,23 +2,24 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Eye, EyeOff, Loader2, Mail, Lock, User, Building2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, Mail, Lock, User, Building2, AtSign, MailCheck, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { toast } from "sonner";
-import { signUp } from "@/lib/actions/auth";
+import { signUp, resendVerification } from "@/lib/actions/auth";
 
 export default function RegisterPage() {
   const t = useTranslations("auth");
-  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [sent, setSent] = useState(false);
   const [fullName, setFullName] = useState("");
   const [companyName, setCompanyName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -28,10 +29,9 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const result = await signUp({ email, password, fullName, companyName });
+      const result = await signUp({ email, username, password, fullName, companyName });
       if (result.ok) {
-        toast.success("Hesap oluşturuldu!", { description: "Dashboard'a yönlendiriliyorsunuz..." });
-        setTimeout(() => router.push("/dashboard"), 500);
+        setSent(true);
       } else {
         toast.error(result.error.message);
       }
@@ -41,6 +41,56 @@ export default function RegisterPage() {
       setLoading(false);
     }
   };
+
+  const handleResend = async () => {
+    setResending(true);
+    try {
+      await resendVerification({ email });
+      toast.success("Doğrulama bağlantısı tekrar gönderildi");
+    } catch {
+      toast.error("Bir hata oluştu");
+    } finally {
+      setResending(false);
+    }
+  };
+
+  if (sent) {
+    return (
+      <div className="animate-fade-in space-y-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+          <MailCheck className="h-6 w-6 text-primary" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold tracking-tight">E-postanızı doğrulayın</h2>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">{email}</span> adresine bir doğrulama
+            bağlantısı gönderdik. Giriş yapabilmek için e-postanızdaki bağlantıya tıklayın.
+            Bağlantı 24 saat geçerlidir.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            E-posta gelmediyse spam klasörünü kontrol edin veya tekrar gönderin.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full h-11"
+          onClick={handleResend}
+          disabled={resending}
+        >
+          {resending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+          Bağlantıyı tekrar gönder
+        </Button>
+        <Link
+          href="/login"
+          className="flex items-center justify-center gap-2 text-sm font-medium text-primary hover:underline"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Girişe dön
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="animate-fade-in">
@@ -76,6 +126,15 @@ export default function RegisterPage() {
                 <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input id="company" placeholder="Şirketinizin adı" className="pl-9 h-11" required value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="username">Kullanıcı adı</Label>
+              <div className="relative">
+                <AtSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input id="username" placeholder="kullaniciadi" className="pl-9 h-11" required value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+              </div>
+              <p className="text-[11px] text-muted-foreground">3-30 karakter; harf, rakam ve . _ - kullanılabilir.</p>
             </div>
 
             <div className="space-y-2">

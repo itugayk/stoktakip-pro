@@ -15,7 +15,7 @@ export default function LoginPage() {
   const t = useTranslations("auth");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -23,7 +23,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const result = await signIn({ email, password });
+      const result = await signIn({ identifier, password });
 
       if (result.ok) {
         toast.success("Giriş başarılı!", {
@@ -62,19 +62,20 @@ export default function LoginPage() {
         <form onSubmit={handleLogin}>
           <CardContent className="space-y-4 p-0">
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-medium">
-                {t("email")}
+              <Label htmlFor="identifier" className="text-sm font-medium">
+                Kullanıcı adı veya e-posta
               </Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="admin@stoktakip.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  id="identifier"
+                  type="text"
+                  placeholder="kullaniciadi veya mail@ornek.com"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
                   className="pl-9 h-11"
                   required
+                  autoComplete="username"
                 />
               </div>
             </div>

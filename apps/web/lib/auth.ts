@@ -15,18 +15,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Credentials({
       credentials: {
-        email: { label: "E-posta", type: "email" },
+        identifier: { label: "Kullanıcı adı veya e-posta", type: "text" },
         password: { label: "Şifre", type: "password" },
       },
       async authorize(credentials) {
-        const email = credentials?.email;
+        const identifier = credentials?.identifier;
         const password = credentials?.password;
-        if (typeof email !== "string" || typeof password !== "string") {
+        if (typeof identifier !== "string" || typeof password !== "string") {
           return null;
         }
 
-        const user = await prisma.user.findUnique({
-          where: { email: email.toLowerCase().trim() },
+        const id = identifier.toLowerCase().trim();
+        const user = await prisma.user.findFirst({
+          where: { OR: [{ email: id }, { username: id }] },
           select: {
             id: true,
             email: true,
@@ -35,10 +36,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             companyId: true,
             role: true,
             isActive: true,
+            emailVerified: true,
           },
         });
 
-        if (!user || !user.passwordHash || !user.isActive) return null;
+        // Reject: missing, no password, disabled, or e-mail not verified.
+        if (!user || !user.passwordHash || !user.isActive || !user.emailVerified) {
+          return null;
+        }
 
         const valid = await bcrypt.compare(password, user.passwordHash);
         if (!valid) return null;
