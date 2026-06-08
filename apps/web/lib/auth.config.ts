@@ -26,7 +26,10 @@ export const authConfig = {
       const { pathname } = request.nextUrl;
       const isLoggedIn = Boolean(auth?.user);
       const isAuthPage =
-        pathname.startsWith("/login") || pathname.startsWith("/register");
+        pathname.startsWith("/login") ||
+        pathname.startsWith("/register") ||
+        pathname.startsWith("/forgot-password") ||
+        pathname.startsWith("/reset-password");
       const isPublic =
         pathname === "/" ||
         pathname.startsWith("/api/auth") ||

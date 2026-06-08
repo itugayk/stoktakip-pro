@@ -1,8 +1,11 @@
 "use server";
 
+import crypto from "crypto";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import bcrypt from "bcryptjs";
+import { sendPasswordResetEmail } from "@/lib/email";
 import { Prisma } from "@prisma/client";
 import { auth, signIn as nextAuthSignIn, signOut as nextAuthSignOut } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -144,6 +147,112 @@ export async function signOut() {
   await nextAuthSignOut({ redirect: false });
   revalidatePath("/", "layout");
   redirect("/login");
+}
+
+// ============================================
+// PASSWORD RESET — request
+// ============================================
+const forgotPasswordSchema = z.object({
+  email: z.string().email("Geçerli bir e-posta girin"),
+});
+
+export async function requestPasswordReset(
+  formData: z.input<typeof forgotPasswordSchema>
+): Promise<Result<{ ok: true }>> {
+  let data: z.infer<typeof forgotPasswordSchema>;
+  try {
+    data = parseInput(forgotPasswordSchema, formData);
+  } catch (e) {
+    const err = e as { code: string; message: string; field?: string };
+    return fail(err.code, err.message, err.field);
+  }
+
+  const email = data.email.toLowerCase().trim();
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, isActive: true },
+  });
+
+  // Always respond identically whether or not the account exists, so the form
+  // can't be used to enumerate registered e-mails.
+  if (user && user.isActive) {
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    // Invalidate any prior unused tokens for this user, then issue a fresh one.
+    await prisma.passwordResetToken.deleteMany({
+      where: { userId: user.id, usedAt: null },
+    });
+    await prisma.passwordResetToken.create({
+      data: { userId: user.id, hashedToken, expiresAt },
+    });
+
+    const h = await headers();
+    const host = h.get("x-forwarded-host") ?? h.get("host") ?? "stok.panel.dijifa.com";
+    const proto = h.get("x-forwarded-proto") ?? "https";
+    const resetUrl = `${proto}://${host}/reset-password?token=${rawToken}`;
+
+    try {
+      await sendPasswordResetEmail(email, resetUrl);
+    } catch (err) {
+      // Don't leak failures to the client (anti-enumeration); log for ops.
+      console.error("[password-reset] e-posta gönderilemedi:", err);
+    }
+  }
+
+  return ok({ ok: true });
+}
+
+// ============================================
+// PASSWORD RESET — confirm
+// ============================================
+const resetPasswordSchema = z.object({
+  token: z.string().min(1, "Geçersiz bağlantı"),
+  password: z.string().min(8, "Şifre en az 8 karakter olmalı"),
+});
+
+export async function resetPassword(
+  formData: z.input<typeof resetPasswordSchema>
+): Promise<Result<{ ok: true }>> {
+  let data: z.infer<typeof resetPasswordSchema>;
+  try {
+    data = parseInput(resetPasswordSchema, formData);
+  } catch (e) {
+    const err = e as { code: string; message: string; field?: string };
+    return fail(err.code, err.message, err.field);
+  }
+
+  const hashedToken = crypto.createHash("sha256").update(data.token).digest("hex");
+  const record = await prisma.passwordResetToken.findUnique({
+    where: { hashedToken },
+    select: { id: true, userId: true, usedAt: true, expiresAt: true },
+  });
+
+  if (!record || record.usedAt || record.expiresAt < new Date()) {
+    return fail(
+      "invalid_token",
+      "Bağlantı geçersiz veya süresi dolmuş. Lütfen yeni bir sıfırlama talebi oluşturun."
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(data.password, 12);
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: record.userId },
+      data: { passwordHash },
+    }),
+    prisma.passwordResetToken.update({
+      where: { id: record.id },
+      data: { usedAt: new Date() },
+    }),
+    // Drop any other outstanding (still-unused) tokens for this user.
+    prisma.passwordResetToken.deleteMany({
+      where: { userId: record.userId, usedAt: null },
+    }),
+  ]);
+
+  return ok({ ok: true });
 }
 
 // ============================================
