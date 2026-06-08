@@ -1,45 +1,86 @@
 import "server-only";
+import dns from "node:dns";
 import nodemailer, { type Transporter } from "nodemailer";
 
-/**
- * SMTP mailer. Configured via env (Google Workspace / Gmail SMTP by default):
- *   SMTP_HOST   default "smtp.gmail.com"
- *   SMTP_PORT   default 587 (STARTTLS); 465 uses implicit TLS
- *   SMTP_USER   the mailbox, e.g. info@dijifa.com
- *   SMTP_PASS   a Google "App Password" (NOT the account password)
- *   EMAIL_FROM  display sender, defaults to SMTP_USER
- */
-const host = process.env.SMTP_HOST ?? "smtp.gmail.com";
-const port = Number(process.env.SMTP_PORT ?? "587");
-const user = process.env.SMTP_USER;
-const pass = process.env.SMTP_PASS;
-const from = process.env.EMAIL_FROM ?? user ?? "info@dijifa.com";
+// This host's provider blocks outbound SMTP ports (25/465/587), so the default
+// transport is Resend's HTTPS API (port 443, reachable). SMTP is kept as a
+// fallback for environments where it IS allowed.
+//
+// Env:
+//   RESEND_API_KEY  → use Resend HTTPS API (preferred when set)
+//   EMAIL_FROM      → sender address (must be on a Resend-verified domain),
+//                     e.g. info@dijifa.com
+//   SMTP_HOST/PORT/USER/PASS → nodemailer fallback (only if no RESEND_API_KEY)
+dns.setDefaultResultOrder("ipv4first");
 
-let transporter: Transporter | null = null;
+const resendKey = process.env.RESEND_API_KEY;
 
-function getTransporter(): Transporter | null {
-  if (!user || !pass) return null;
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass },
-    });
-  }
-  return transporter;
-}
+const smtpHost = process.env.SMTP_HOST ?? "smtp.gmail.com";
+const smtpPort = Number(process.env.SMTP_PORT ?? "587");
+const smtpUser = process.env.SMTP_USER;
+const smtpPass = process.env.SMTP_PASS;
+
+const from = process.env.EMAIL_FROM ?? smtpUser ?? "info@dijifa.com";
 
 export function isEmailConfigured(): boolean {
-  return Boolean(user && pass);
+  return Boolean(resendKey || (smtpUser && smtpPass));
+}
+
+interface Mail {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+async function sendViaResend(mail: Mail): Promise<void> {
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${resendKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: `StokTakip <${from}>`,
+      to: [mail.to],
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`resend_failed_${res.status}: ${body}`);
+  }
+}
+
+let transporter: Transporter | null = null;
+async function sendViaSmtp(mail: Mail): Promise<void> {
+  if (!smtpUser || !smtpPass) throw new Error("email_not_configured");
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+  }
+  await transporter.sendMail({
+    from: `StokTakip <${from}>`,
+    to: mail.to,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html,
+  });
+}
+
+async function send(mail: Mail): Promise<void> {
+  if (resendKey) return sendViaResend(mail);
+  return sendViaSmtp(mail);
 }
 
 export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
-  const t = getTransporter();
-  if (!t) throw new Error("email_not_configured");
-
-  await t.sendMail({
-    from: `StokTakip <${from}>`,
+  await send({
     to,
     subject: "StokTakip — Şifre sıfırlama",
     text:
