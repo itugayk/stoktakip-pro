@@ -9,8 +9,8 @@
 // directly. The SW only signals connectivity; the page-side replay happens
 // when `online` event fires.
 
-const STATIC_CACHE = "stoktakip-static-v2";
-const RUNTIME_CACHE = "stoktakip-runtime-v2";
+const STATIC_CACHE = "stoktakip-static-v3";
+const RUNTIME_CACHE = "stoktakip-runtime-v3";
 const OFFLINE_URL = "/offline";
 
 const PRECACHE_ASSETS = [
@@ -65,9 +65,12 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 2) Navigation (HTML page loads): stale-while-revalidate.
+  // 2) Navigation (HTML page loads): network-first. The app shell is auth-gated
+  //    and changes on every deploy, so always prefer fresh HTML when online and
+  //    fall back to cache (then the offline page) only when the network fails.
+  //    Serving stale HTML here would pin the user to an old build's JS chunks.
   if (request.mode === "navigate" || request.headers.get("accept")?.includes("text/html")) {
-    event.respondWith(staleWhileRevalidate(request));
+    event.respondWith(navigationNetworkFirst(request));
     return;
   }
 
@@ -96,23 +99,17 @@ async function cacheFirst(request) {
   }
 }
 
-async function staleWhileRevalidate(request) {
+async function navigationNetworkFirst(request) {
   const cache = await caches.open(RUNTIME_CACHE);
-  const cached = await cache.match(request);
-  const network = fetch(request)
-    .then((response) => {
-      if (response.ok) cache.put(request, response.clone());
-      return response;
-    })
-    .catch(() => null);
-  if (cached) {
-    // Refresh in the background; return stale immediately.
-    network.catch(() => {});
-    return cached;
+  try {
+    const response = await fetch(request);
+    if (response.ok) cache.put(request, response.clone());
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    return caches.match(OFFLINE_URL).then((o) => o ?? new Response("Offline", { status: 503 }));
   }
-  const response = await network;
-  if (response) return response;
-  return caches.match(OFFLINE_URL).then((o) => o ?? new Response("Offline", { status: 503 }));
 }
 
 async function networkFirst(request) {
