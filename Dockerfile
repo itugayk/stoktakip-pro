@@ -43,10 +43,9 @@ WORKDIR /app/apps/web
 RUN pnpm exec prisma generate
 
 # Next.js build (outputs to apps/web/.next/standalone)
-# Give Node extra heap so the webpack compile has headroom on small build
-# boxes. Type/lint checking is skipped in-build (see next.config.ts) — it runs
-# locally before push — which is what was OOM-killing this step.
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+# Type/lint checking is skipped in-build (see next.config.ts) — it runs locally
+# before push. This avoids the post-compile type-check step being killed during
+# deploy.
 RUN pnpm build
 
 # --- Runner ---
