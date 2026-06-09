@@ -19,6 +19,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuTrigger, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -38,7 +41,13 @@ export default function CategoriesPage() {
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [form, setForm] = useState({ name: "", icon: "📦", color: "#6366f1" });
+  const [form, setForm] = useState({ name: "", icon: "📦", color: "#6366f1", parentId: "" });
+
+  // Only top-level categories can be parents — we keep the tree at one level
+  // deep (kategori → alt kategori) for a predictable UI.
+  const topLevel = categories.filter((c) => !c.parentId);
+  const childrenOf = (parentId: string) =>
+    categories.filter((c) => c.parentId === parentId);
 
   useEffect(() => {
     async function load() {
@@ -57,37 +66,65 @@ export default function CategoriesPage() {
   const getProductCount = (categoryId: string) =>
     products.filter((p) => p.categoryId === categoryId).length;
 
-  const filtered = categories.filter((c) =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase())
-  );
+  // Flatten the tree into ordered rows (parent followed by its children) so the
+  // table can render one level of nesting. Orphans (parent inactive/missing) fall
+  // back to top level so nothing disappears.
+  const q = search.trim().toLowerCase();
+  const matches = (c: Category) => !q || c.name.toLowerCase().includes(q);
+  const orderedRows: { cat: Category; depth: number }[] = [];
+  const rendered = new Set<string>();
+  for (const parent of topLevel) {
+    const kids = childrenOf(parent.id);
+    const parentVisible = matches(parent) || kids.some(matches);
+    if (parentVisible) {
+      orderedRows.push({ cat: parent, depth: 0 });
+      rendered.add(parent.id);
+      for (const child of kids) {
+        if (matches(child) || matches(parent)) {
+          orderedRows.push({ cat: child, depth: 1 });
+          rendered.add(child.id);
+        }
+      }
+    }
+  }
+  for (const c of categories) {
+    if (!rendered.has(c.id) && matches(c)) orderedRows.push({ cat: c, depth: 0 });
+  }
 
   const handleAdd = async () => {
     if (!form.name.trim()) { toast.error("Kategori adı zorunludur"); return; }
-    const result = await createCategory({ name: form.name, icon: form.icon, color: form.color });
+    const parentId = form.parentId || null;
+    const result = await createCategory({ name: form.name, icon: form.icon, color: form.color, parentId });
     if (result.ok) {
-      const newCat: Category = { id: result.data.id, name: form.name, icon: form.icon, color: form.color };
+      const newCat: Category = {
+        id: result.data.id, name: form.name, icon: form.icon, color: form.color,
+        parentId: parentId ?? undefined,
+      };
       setCategories((prev) => [...prev, newCat]);
       setShowAddDialog(false);
-      setForm({ name: "", icon: "📦", color: "#6366f1" });
+      setForm({ name: "", icon: "📦", color: "#6366f1", parentId: "" });
       toast.success("Kategori eklendi");
     } else { toast.error(result.error.message); }
   };
 
   const openEdit = (cat: Category) => {
     setEditingCategory(cat);
-    setForm({ name: cat.name, icon: cat.icon || "📦", color: cat.color || "#6366f1" });
+    setForm({ name: cat.name, icon: cat.icon || "📦", color: cat.color || "#6366f1", parentId: cat.parentId || "" });
     setShowEditDialog(true);
   };
 
   const handleEdit = async () => {
     if (!editingCategory || !form.name.trim()) { toast.error("Kategori adı zorunludur"); return; }
+    const parentId = form.parentId || null;
     const result = await updateCategory({
       id: editingCategory.id,
-      patch: { name: form.name, icon: form.icon, color: form.color },
+      patch: { name: form.name, icon: form.icon, color: form.color, parentId },
     });
     if (result.ok) {
       setCategories((prev) => prev.map((c) =>
-        c.id === editingCategory.id ? { ...c, name: form.name, icon: form.icon, color: form.color } : c
+        c.id === editingCategory.id
+          ? { ...c, name: form.name, icon: form.icon, color: form.color, parentId: parentId ?? undefined }
+          : c
       ));
       setShowEditDialog(false);
       setEditingCategory(null);
@@ -101,6 +138,11 @@ export default function CategoriesPage() {
       toast.error(`Bu kategoride ${count} ürün var, önce ürünleri taşıyın`);
       return;
     }
+    const subCount = childrenOf(id).length;
+    if (subCount > 0) {
+      toast.error(`Bu kategorinin ${subCount} alt kategorisi var, önce onları silin veya taşıyın`);
+      return;
+    }
     const result = await deleteCategory(id);
     if (result.ok) {
       setCategories((prev) => prev.filter((c) => c.id !== id));
@@ -108,11 +150,43 @@ export default function CategoriesPage() {
     } else { toast.error(result.error.message); }
   };
 
-  const renderForm = () => (
+  const renderForm = () => {
+    // A category being edited can't be its own parent, and to keep the tree one
+    // level deep, a category that already has sub-categories can't itself become a child.
+    const editingId = editingCategory?.id;
+    const editingHasChildren = editingId ? childrenOf(editingId).length > 0 : false;
+    const parentOptions = topLevel.filter((c) => c.id !== editingId);
+
+    return (
     <div className="grid gap-4 py-2">
       <div className="grid gap-2">
         <Label>Kategori Adı *</Label>
         <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Kategori adı" />
+      </div>
+      <div className="grid gap-2">
+        <Label>Üst Kategori</Label>
+        <Select
+          value={form.parentId || "none"}
+          onValueChange={(v) => setForm({ ...form, parentId: !v || v === "none" ? "" : v })}
+          disabled={editingHasChildren}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Ana kategori (üst yok)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Ana kategori (üst yok)</SelectItem>
+            {parentOptions.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.icon || "📦"} {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {editingHasChildren && (
+          <p className="text-[11px] text-muted-foreground">
+            Bu kategorinin alt kategorileri var, bu yüzden başka bir kategoriye bağlanamaz.
+          </p>
+        )}
       </div>
       <div className="grid gap-2">
         <Label>Simge</Label>
@@ -148,7 +222,8 @@ export default function CategoriesPage() {
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -156,7 +231,7 @@ export default function CategoriesPage() {
         title="Kategoriler"
         description={`${categories.length} kategori`}
         actions={
-          <Button onClick={() => { setForm({ name: "", icon: "📦", color: "#6366f1" }); setShowAddDialog(true); }}>
+          <Button onClick={() => { setForm({ name: "", icon: "📦", color: "#6366f1", parentId: "" }); setShowAddDialog(true); }}>
             <Plus className="mr-2 h-4 w-4" />Kategori Ekle
           </Button>
         }
@@ -187,18 +262,30 @@ export default function CategoriesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((cat) => (
+                {orderedRows.map(({ cat, depth }) => {
+                  const subCount = depth === 0 ? childrenOf(cat.id).length : 0;
+                  return (
                   <TableRow key={cat.id} className="group hover:bg-muted/50">
                     <TableCell>
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-3" style={{ paddingLeft: depth * 28 }}>
+                        {depth > 0 && (
+                          <span className="text-muted-foreground/50 -mr-1 select-none">↳</span>
+                        )}
                         <div
-                          className="flex h-9 w-9 items-center justify-center rounded-lg text-lg"
+                          className="flex h-9 w-9 items-center justify-center rounded-lg text-lg shrink-0"
                           style={{ backgroundColor: (cat.color || "#6366f1") + "20" }}
                         >
                           {cat.icon || "📦"}
                         </div>
                         <div>
-                          <p className="font-medium text-sm">{cat.name}</p>
+                          <p className="font-medium text-sm flex items-center gap-2">
+                            {cat.name}
+                            {subCount > 0 && (
+                              <Badge variant="outline" className="text-[10px] font-normal">
+                                {subCount} alt kategori
+                              </Badge>
+                            )}
+                          </p>
                           <div className="flex items-center gap-1.5">
                             <div className="h-2 w-2 rounded-full" style={{ backgroundColor: cat.color || "#6366f1" }} />
                             <span className="text-[10px] text-muted-foreground font-mono">{cat.color || "#6366f1"}</span>
@@ -228,8 +315,9 @@ export default function CategoriesPage() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
-                ))}
-                {filtered.length === 0 && !loading && (
+                  );
+                })}
+                {orderedRows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell colSpan={3} className="p-0">
                       <EmptyState

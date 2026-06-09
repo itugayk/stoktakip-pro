@@ -14,6 +14,8 @@ import {
 import {
   withAuth,
   withCompany,
+  withRole,
+  warehouseScope,
   ok,
   parseInput,
   z,
@@ -25,9 +27,14 @@ import { assertWithinLimit } from "@/lib/billing/enforce";
 // WAREHOUSES
 // ============================================
 export const getWarehouses = withAuth<void, Warehouse[]>(async (ctx) => {
+  const scope = warehouseScope(ctx);
   const [warehouses, inventoryRows] = await Promise.all([
     ctx.prisma.warehouse.findMany({
-      where: { companyId: ctx.companyId, isActive: true },
+      where: {
+        companyId: ctx.companyId,
+        isActive: true,
+        ...(scope ? { id: { in: scope } } : {}),
+      },
       orderBy: { name: "asc" },
       include: { manager: { select: { fullName: true } } },
     }),
@@ -67,12 +74,20 @@ const warehouseInputSchema = z.object({
   managerId: z.string().optional(),
 });
 
-export const createWarehouse = withCompany<
+export const createWarehouse = withRole<
   z.input<typeof warehouseInputSchema>,
   void
->(async (ctx, raw) => {
+>(["admin", "manager"], async (ctx, raw) => {
   const data = parseInput(warehouseInputSchema, raw);
   await assertWithinLimit(ctx, "warehouses");
+
+  if (data.managerId) {
+    const mgr = await ctx.prisma.user.findFirst({
+      where: { id: data.managerId, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!mgr) throw ERR.validation("Sorumlu bulunamadı", "managerId");
+  }
 
   const insert = fromWarehouse({
     ...data,
@@ -83,13 +98,56 @@ export const createWarehouse = withCompany<
   return ok();
 });
 
-export const deleteWarehouse = withCompany<string, void>(async (ctx, id) => {
-  const res = await ctx.prisma.warehouse.deleteMany({
+const warehouseUpdateSchema = z.object({
+  id: z.string(),
+  patch: z
+    .object({
+      name: z.string().min(1, "Depo adı zorunlu").optional(),
+      address: z.string().optional().nullable(),
+      managerId: z.string().optional().nullable(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "Güncellenecek alan yok",
+    }),
+});
+
+export const updateWarehouse = withRole<
+  z.input<typeof warehouseUpdateSchema>,
+  void
+>(["admin", "manager"], async (ctx, raw) => {
+  const { id, patch } = parseInput(warehouseUpdateSchema, raw);
+
+  // Verify ownership before update.
+  const exists = await ctx.prisma.warehouse.findFirst({
     where: { id, companyId: ctx.companyId },
+    select: { id: true },
   });
-  if (res.count === 0) throw ERR.notFound("Depo");
+  if (!exists) throw ERR.notFound("Depo");
+
+  // A chosen manager must be a user in this company.
+  if (patch.managerId) {
+    const mgr = await ctx.prisma.user.findFirst({
+      where: { id: patch.managerId, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!mgr) throw ERR.validation("Sorumlu bulunamadı", "managerId");
+  }
+
+  const update = fromWarehouse(patch);
+  await ctx.prisma.warehouse.update({ where: { id }, data: update });
   return ok();
 });
+
+export const deleteWarehouse = withRole<string, void>(
+  ["admin", "manager"],
+  async (ctx, id) => {
+    const res = await ctx.prisma.warehouse.deleteMany({
+      where: { id, companyId: ctx.companyId },
+    });
+    if (res.count === 0) throw ERR.notFound("Depo");
+    return ok();
+  }
+);
 
 // ============================================
 // SUPPLIERS

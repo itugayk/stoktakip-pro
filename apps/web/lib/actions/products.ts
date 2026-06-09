@@ -205,6 +205,7 @@ const categoryInputSchema = z.object({
   name: z.string().min(1, "Kategori adı zorunlu"),
   icon: z.string().optional(),
   color: z.string().optional(),
+  parentId: z.string().optional().nullable(),
 });
 
 export const createCategory = withCompany<
@@ -212,6 +213,15 @@ export const createCategory = withCompany<
   { id: string }
 >(async (ctx, raw) => {
   const data = parseInput(categoryInputSchema, raw);
+
+  // A sub-category's parent must be an existing category in this company.
+  if (data.parentId) {
+    const parent = await ctx.prisma.category.findFirst({
+      where: { id: data.parentId, companyId: ctx.companyId },
+      select: { id: true },
+    });
+    if (!parent) throw ERR.validation("Üst kategori bulunamadı", "parentId");
+  }
 
   const insert = fromCategory({
     ...data,
@@ -235,6 +245,7 @@ const categoryUpdateSchema = z.object({
       name: z.string().optional(),
       icon: z.string().optional(),
       color: z.string().optional(),
+      parentId: z.string().optional().nullable(),
     })
     .refine((v) => Object.keys(v).length > 0, {
       message: "Güncellenecek alan yok",
@@ -252,6 +263,22 @@ export const updateCategory = withCompany<
     select: { id: true },
   });
   if (!exists) throw ERR.notFound("Kategori");
+
+  // Parent validation: must be a different category in this company, and the
+  // chosen parent may not itself be a child of this category (no cycles).
+  if (patch.parentId) {
+    if (patch.parentId === id) {
+      throw ERR.validation("Kategori kendisinin alt kategorisi olamaz", "parentId");
+    }
+    const parent = await ctx.prisma.category.findFirst({
+      where: { id: patch.parentId, companyId: ctx.companyId },
+      select: { id: true, parentId: true },
+    });
+    if (!parent) throw ERR.validation("Üst kategori bulunamadı", "parentId");
+    if (parent.parentId === id) {
+      throw ERR.validation("Döngüsel kategori ilişkisi oluşturulamaz", "parentId");
+    }
+  }
 
   const update = fromCategory(patch);
   await ctx.prisma.category.update({

@@ -26,6 +26,7 @@ export {
 export {
   getWarehouses,
   createWarehouse,
+  updateWarehouse,
   deleteWarehouse,
   getSuppliers,
   createSupplier,

@@ -27,7 +27,11 @@ export function toWarehouse(
 }
 
 export function fromWarehouse(
-  w: Partial<Warehouse> & { companyId?: string }
+  w: Partial<Omit<Warehouse, "address" | "managerId">> & {
+    companyId?: string;
+    address?: string | null;
+    managerId?: string | null;
+  }
 ): Partial<WarehouseCreate> {
   const out: Partial<WarehouseCreate> = {};
   if (w.companyId !== undefined) out.companyId = w.companyId;

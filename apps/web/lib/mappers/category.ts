@@ -14,7 +14,10 @@ export function toCategory(row: PrismaCategory): Category {
 }
 
 export function fromCategory(
-  c: Partial<Category> & { companyId?: string }
+  c: Partial<Omit<Category, "parentId">> & {
+    companyId?: string;
+    parentId?: string | null;
+  }
 ): Partial<CategoryCreate> {
   const out: Partial<CategoryCreate> = {};
   if (c.companyId !== undefined) out.companyId = c.companyId;

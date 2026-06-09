@@ -11,6 +11,7 @@ import {
 import {
   withAuth,
   withCompany,
+  warehouseScope,
   ok,
   parseInput,
   z,
@@ -44,6 +45,20 @@ export const getStockMovements = withAuth<
         { sku: { contains: filters.search, mode: "insensitive" } },
       ],
     };
+  }
+
+  // Warehouse staff only see movements touching their assigned warehouses.
+  // Composed via AND so it doesn't clobber the optional `warehouseId` filter above.
+  const scope = warehouseScope(ctx);
+  if (scope) {
+    where.AND = [
+      {
+        OR: [
+          { fromWarehouseId: { in: scope } },
+          { toWarehouseId: { in: scope } },
+        ],
+      },
+    ];
   }
 
   const rows = await ctx.prisma.stockMovement.findMany({
@@ -115,6 +130,16 @@ export const createStockMovement = withCompany<
     data.type === "out" || data.type === "transfer" ? data.warehouseId : null;
   const toWarehouseId =
     data.type === "in" ? data.warehouseId : data.toWarehouseId ?? null;
+
+  // Warehouse staff may only move stock into/out of warehouses they're assigned to.
+  const scope = warehouseScope(ctx);
+  if (scope) {
+    const touched = [fromWarehouseId, toWarehouseId].filter(Boolean) as string[];
+    const outOfScope = touched.find((id) => !scope.includes(id));
+    if (outOfScope) {
+      throw ERR.validation("Bu depoda işlem yapma yetkiniz yok", "warehouseId");
+    }
+  }
 
   // Idempotency: if this offline action was already applied, treat as success.
   if (data.clientActionId) {

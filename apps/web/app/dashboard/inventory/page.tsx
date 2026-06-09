@@ -45,10 +45,15 @@ export default function InventoryPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [moveType, setMoveType] = useState<MovementType>("in");
+  const [warehouseFilter, setWarehouseFilter] = useState<string>("all");
 
   useEffect(() => {
     async function load() {
       try {
+        // Honor a ?warehouse=<id> deep-link (e.g. from a warehouse card) so the
+        // list opens already scoped to that warehouse.
+        const deepLinked = new URLSearchParams(window.location.search).get("warehouse");
+        if (deepLinked) setWarehouseFilter(deepLinked);
         const [m, p, w] = await Promise.all([
           getStockMovements(undefined),
           getProducts(undefined),
@@ -77,8 +82,13 @@ export default function InventoryPage() {
       );
     }
     if (typeFilter !== "all") result = result.filter((m) => m.type === typeFilter);
+    if (warehouseFilter !== "all") {
+      result = result.filter(
+        (m) => m.warehouseId === warehouseFilter || m.toWarehouseId === warehouseFilter
+      );
+    }
     return result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [movements, search, typeFilter]);
+  }, [movements, search, typeFilter, warehouseFilter]);
 
   const openAdd = (type: MovementType) => {
     setMoveType(type);
@@ -191,6 +201,15 @@ export default function InventoryPage() {
               <SelectItem value="out">Çıkış</SelectItem>
               <SelectItem value="transfer">Transfer</SelectItem>
               <SelectItem value="adjustment">Düzeltme</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={warehouseFilter} onValueChange={(v) => setWarehouseFilter(v ?? "all")}>
+            <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="Depo" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tüm depolar</SelectItem>
+              {warehouses.map((w) => (
+                <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </CardContent>
