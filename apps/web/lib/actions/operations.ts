@@ -22,6 +22,7 @@ import {
   ERR,
 } from "@/lib/server";
 import { assertWithinLimit } from "@/lib/billing/enforce";
+import { computePartyBalances } from "@/lib/cari/balance";
 
 // ============================================
 // WAREHOUSES
@@ -153,11 +154,19 @@ export const deleteWarehouse = withRole<string, void>(
 // SUPPLIERS
 // ============================================
 export const getSuppliers = withAuth<void, Supplier[]>(async (ctx) => {
-  const rows = await ctx.prisma.supplier.findMany({
-    where: { companyId: ctx.companyId },
-    orderBy: { name: "asc" },
-  });
-  return ok(rows.map((s) => toSupplier(s)));
+  const [rows, balances] = await Promise.all([
+    ctx.prisma.supplier.findMany({
+      where: { companyId: ctx.companyId },
+      orderBy: { name: "asc" },
+      include: { _count: { select: { purchaseOrders: true } } },
+    }),
+    computePartyBalances(ctx.prisma, ctx.companyId),
+  ]);
+  return ok(
+    rows.map((s) =>
+      toSupplier(s, s._count.purchaseOrders, balances.suppliers.get(s.id) ?? 0)
+    )
+  );
 });
 
 const supplierInputSchema = z.object({
@@ -182,6 +191,27 @@ export const createSupplier = withCompany<
   return ok();
 });
 
+const supplierUpdateSchema = z.object({
+  id: z.string(),
+  patch: supplierInputSchema.partial().refine((v) => Object.keys(v).length > 0, {
+    message: "Güncellenecek alan yok",
+  }),
+});
+
+export const updateSupplier = withCompany<
+  z.input<typeof supplierUpdateSchema>,
+  void
+>(async (ctx, raw) => {
+  const { id, patch } = parseInput(supplierUpdateSchema, raw);
+  const exists = await ctx.prisma.supplier.findFirst({
+    where: { id, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!exists) throw ERR.notFound("Tedarikçi");
+  await ctx.prisma.supplier.update({ where: { id }, data: fromSupplier(patch) });
+  return ok();
+});
+
 export const deleteSupplier = withCompany<string, void>(async (ctx, id) => {
   const res = await ctx.prisma.supplier.deleteMany({
     where: { id, companyId: ctx.companyId },
@@ -194,11 +224,23 @@ export const deleteSupplier = withCompany<string, void>(async (ctx, id) => {
 // CUSTOMERS
 // ============================================
 export const getCustomers = withAuth<void, Customer[]>(async (ctx) => {
-  const rows = await ctx.prisma.customer.findMany({
-    where: { companyId: ctx.companyId },
-    orderBy: { name: "asc" },
-  });
-  return ok(rows.map((c) => toCustomer(c)));
+  const [rows, balances] = await Promise.all([
+    ctx.prisma.customer.findMany({
+      where: { companyId: ctx.companyId },
+      orderBy: { name: "asc" },
+      include: { _count: { select: { salesOrders: true, sales: true } } },
+    }),
+    computePartyBalances(ctx.prisma, ctx.companyId),
+  ]);
+  return ok(
+    rows.map((c) =>
+      toCustomer(
+        c,
+        c._count.salesOrders + c._count.sales,
+        balances.customers.get(c.id) ?? 0
+      )
+    )
+  );
 });
 
 const customerInputSchema = z.object({
@@ -208,6 +250,7 @@ const customerInputSchema = z.object({
   phone: z.string().optional(),
   address: z.string().optional(),
   taxId: z.string().optional(),
+  creditLimit: z.number().nonnegative().optional(),
 });
 
 export const createCustomer = withCompany<
@@ -220,6 +263,27 @@ export const createCustomer = withCompany<
     companyId: ctx.companyId,
   }) as Prisma.CustomerUncheckedCreateInput;
   await ctx.prisma.customer.create({ data: insert });
+  return ok();
+});
+
+const customerUpdateSchema = z.object({
+  id: z.string(),
+  patch: customerInputSchema.partial().refine((v) => Object.keys(v).length > 0, {
+    message: "Güncellenecek alan yok",
+  }),
+});
+
+export const updateCustomer = withCompany<
+  z.input<typeof customerUpdateSchema>,
+  void
+>(async (ctx, raw) => {
+  const { id, patch } = parseInput(customerUpdateSchema, raw);
+  const exists = await ctx.prisma.customer.findFirst({
+    where: { id, companyId: ctx.companyId },
+    select: { id: true },
+  });
+  if (!exists) throw ERR.notFound("Müşteri");
+  await ctx.prisma.customer.update({ where: { id }, data: fromCustomer(patch) });
   return ok();
 });
 

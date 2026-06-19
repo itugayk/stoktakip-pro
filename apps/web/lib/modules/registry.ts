@@ -20,6 +20,9 @@ export type ModuleKey =
   | "customers"
   | "purchasing"
   | "sales"
+  | "pos"
+  | "payments"
+  | "delivery"
   | "returns"
   | "pricing"
   | "reports"
@@ -40,6 +43,9 @@ export const ALL_MODULES: ModuleKey[] = [
   "customers",
   "purchasing",
   "sales",
+  "pos",
+  "payments",
+  "delivery",
   "returns",
   "pricing",
   "reports",
@@ -62,6 +68,9 @@ export const MODULE_LABELS: Record<ModuleKey, string> = {
   customers: "Müşteriler",
   purchasing: "Satın Alma Siparişleri",
   sales: "Satış Siparişleri",
+  pos: "Hızlı Satış (POS)",
+  payments: "Ödemeler / Cari Hesap",
+  delivery: "İrsaliyeler",
   returns: "İadeler",
   pricing: "Fiyat Listeleri",
   reports: "Raporlar",
@@ -89,6 +98,10 @@ const HREF_MODULE: Record<string, ModuleKey | "core"> = {
   "/dashboard/customers": "customers",
   "/dashboard/orders/purchase": "purchasing",
   "/dashboard/orders/sales": "sales",
+  "/dashboard/sales/quick": "pos",
+  "/dashboard/payments": "payments",
+  "/dashboard/accounts": "payments",
+  "/dashboard/delivery-notes": "delivery",
   "/dashboard/returns": "returns",
   "/dashboard/price-lists": "pricing",
   "/dashboard/reports": "reports",
@@ -143,8 +156,8 @@ export const BUSINESS_PRESETS: Record<BusinessType, BusinessPreset> = {
     icon: "ShoppingCart",
     enabledModules: [
       "products", "scanner", "inventory", "expiry", "counts", "reorder",
-      "suppliers", "customers", "purchasing", "sales", "returns", "pricing",
-      "reports", "tasks",
+      "suppliers", "customers", "purchasing", "sales", "pos", "payments",
+      "delivery", "returns", "pricing", "reports", "tasks",
     ],
   },
   pharmacy: {
@@ -153,8 +166,8 @@ export const BUSINESS_PRESETS: Record<BusinessType, BusinessPreset> = {
     icon: "Pill",
     enabledModules: [
       "products", "scanner", "inventory", "expiry", "counts", "reorder",
-      "suppliers", "customers", "purchasing", "sales", "returns",
-      "reports", "tasks",
+      "suppliers", "customers", "purchasing", "sales", "pos", "payments",
+      "delivery", "returns", "reports", "tasks",
     ],
     terms: { products: "İlaçlar" },
   },
@@ -164,7 +177,7 @@ export const BUSINESS_PRESETS: Record<BusinessType, BusinessPreset> = {
     icon: "UtensilsCrossed",
     enabledModules: [
       "products", "recipes", "inventory", "expiry", "counts", "reorder",
-      "suppliers", "purchasing", "reports", "tasks",
+      "suppliers", "purchasing", "pos", "payments", "reports", "tasks",
     ],
     terms: { products: "Malzemeler", categories: "Malzeme Grupları" },
   },

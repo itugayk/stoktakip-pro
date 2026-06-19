@@ -23,6 +23,10 @@ import {
   Tag,
   Plug,
   ChefHat,
+  ShoppingCart,
+  Wallet,
+  FileText,
+  BookUser,
 } from "lucide-react";
 import {
   Sidebar,
@@ -72,6 +76,7 @@ export function AppSidebar() {
 
   const mainNav = [
     { href: "/dashboard", label: t("dashboard"), icon: LayoutDashboard, exact: true },
+    { href: "/dashboard/sales/quick", label: "Hızlı Satış", icon: ShoppingCart },
     { href: "/dashboard/products", label: term(businessType, "products", t("products")), icon: Package },
     { href: "/dashboard/categories", label: term(businessType, "categories", "Kategoriler"), icon: Tag },
     { href: "/dashboard/scanner", label: t("scanner"), icon: ScanLine },
@@ -92,6 +97,9 @@ export function AppSidebar() {
     { href: "/dashboard/customers", label: t("customers"), icon: Users },
     { href: "/dashboard/orders/purchase", label: t("purchaseOrders"), icon: PackagePlus },
     { href: "/dashboard/orders/sales", label: t("salesOrders"), icon: PackageMinus },
+    { href: "/dashboard/delivery-notes", label: "İrsaliyeler", icon: FileText },
+    { href: "/dashboard/payments", label: "Ödemeler", icon: Wallet },
+    { href: "/dashboard/accounts", label: "Cari Hesaplar", icon: BookUser },
     { href: "/dashboard/returns", label: "İadeler", icon: ArrowRightLeft },
     { href: "/dashboard/price-lists", label: "Fiyat Listeleri", icon: Tag },
   ];

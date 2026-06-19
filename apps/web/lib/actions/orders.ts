@@ -674,10 +674,21 @@ export const getSalesOrders = withAuth<
   );
 });
 
+const paymentMethodEnum = z.enum([
+  "cash",
+  "card",
+  "bank_transfer",
+  "credit",
+  "check",
+  "other",
+]);
+
 const createSOSchema = z.object({
   customerId: z.string().min(1, "Müşteri seçin"),
   warehouseId: z.string().min(1, "Depo seçin"),
   notes: z.string().optional(),
+  paymentMethod: paymentMethodEnum.optional(),
+  dueDate: z.string().optional(),
   items: z
     .array(
       z.object({
@@ -755,6 +766,8 @@ export const createSalesOrder = withAuth<
       subtotal,
       taxAmount,
       totalAmount: subtotal + taxAmount,
+      paymentMethod: data.paymentMethod ?? null,
+      dueDate: data.dueDate ? new Date(data.dueDate) : null,
       notes: data.notes ?? null,
       userId: ctx.userId,
       items: { create: itemData },
@@ -877,6 +890,175 @@ export const cancelSalesOrder = withAuth<z.input<typeof idSchema>, void>(
     return ok();
   }
 );
+
+// ============================================
+// 4.6 — PURCHASE ORDER: LIST / CREATE
+// ============================================
+
+export interface PurchaseOrderRow {
+  id: string;
+  orderNumber: string;
+  supplierId: string;
+  supplierName: string;
+  warehouseId: string;
+  status: POStatus;
+  totalAmount: number;
+  paidAmount: number;
+  paymentStatus: "unpaid" | "partial" | "paid";
+  itemCount: number;
+  orderDate: string;
+  createdAt: string;
+  notes: string | null;
+}
+
+export const getPurchaseOrders = withAuth<
+  { status?: POStatus; search?: string } | undefined,
+  PurchaseOrderRow[]
+>(async (ctx, filters) => {
+  const rows = await ctx.prisma.purchaseOrder.findMany({
+    where: {
+      companyId: ctx.companyId,
+      ...(filters?.status ? { status: filters.status } : {}),
+      ...(filters?.search
+        ? {
+            OR: [
+              { orderNumber: { contains: filters.search, mode: "insensitive" } },
+              {
+                supplier: {
+                  name: { contains: filters.search, mode: "insensitive" },
+                },
+              },
+            ],
+          }
+        : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    include: {
+      supplier: { select: { name: true } },
+      _count: { select: { items: true } },
+    },
+  });
+
+  return ok(
+    rows.map((o) => ({
+      id: o.id,
+      orderNumber: o.orderNumber,
+      supplierId: o.supplierId,
+      supplierName: o.supplier?.name ?? "—",
+      warehouseId: o.warehouseId,
+      status: o.status as POStatus,
+      totalAmount: Number(o.totalAmount),
+      paidAmount: Number(o.paidAmount),
+      paymentStatus: o.paymentStatus,
+      itemCount: o._count.items,
+      orderDate: o.orderDate.toISOString(),
+      createdAt: o.createdAt.toISOString(),
+      notes: o.notes ?? null,
+    }))
+  );
+});
+
+const createPOSchema = z.object({
+  supplierId: z.string().min(1, "Tedarikçi seçin"),
+  warehouseId: z.string().min(1, "Depo seçin"),
+  notes: z.string().optional(),
+  paymentMethod: z
+    .enum(["cash", "card", "bank_transfer", "credit", "check", "other"])
+    .optional(),
+  dueDate: z.string().optional(),
+  items: z
+    .array(
+      z.object({
+        productId: z.string(),
+        quantity: z.number().positive("Miktar 0'dan büyük olmalı"),
+        unitPrice: z.number().nonnegative().optional(),
+      })
+    )
+    .min(1, "En az bir kalem ekleyin"),
+});
+
+export const createPurchaseOrder = withAuth<
+  z.input<typeof createPOSchema>,
+  { orderId: string }
+>(async (ctx, raw) => {
+  await assertModuleEnabled(ctx, "purchasing");
+  const data = parseInput(createPOSchema, raw);
+
+  const [supplier, warehouse, products] = await Promise.all([
+    ctx.prisma.supplier.findFirst({
+      where: { id: data.supplierId, companyId: ctx.companyId },
+      select: { id: true },
+    }),
+    ctx.prisma.warehouse.findFirst({
+      where: { id: data.warehouseId, companyId: ctx.companyId },
+      select: { id: true },
+    }),
+    ctx.prisma.product.findMany({
+      where: {
+        companyId: ctx.companyId,
+        id: { in: data.items.map((i) => i.productId) },
+      },
+      select: { id: true, purchasePrice: true, taxRate: true },
+    }),
+  ]);
+  if (!supplier) throw ERR.notFound("Tedarikçi");
+  if (!warehouse) throw ERR.notFound("Depo");
+
+  const priceById = new Map(
+    products.map((p) => [
+      p.id,
+      { purchase: Number(p.purchasePrice), tax: Number(p.taxRate) },
+    ])
+  );
+
+  let subtotal = 0;
+  let taxAmount = 0;
+  const itemData = data.items.map((it) => {
+    const p = priceById.get(it.productId);
+    if (!p) throw ERR.notFound("Ürün");
+    const unitPrice = it.unitPrice ?? p.purchase;
+    const lineTotal = unitPrice * it.quantity;
+    subtotal += lineTotal;
+    taxAmount += lineTotal * (p.tax / 100);
+    return {
+      productId: it.productId,
+      quantity: it.quantity,
+      unitPrice,
+      taxRate: p.tax,
+      total: lineTotal,
+    };
+  });
+
+  const orderNumber = `PO-${Date.now().toString().slice(-8)}`;
+
+  const order = await ctx.prisma.purchaseOrder.create({
+    data: {
+      companyId: ctx.companyId,
+      supplierId: data.supplierId,
+      warehouseId: data.warehouseId,
+      orderNumber,
+      status: "draft",
+      subtotal,
+      taxAmount,
+      totalAmount: subtotal + taxAmount,
+      paymentMethod: data.paymentMethod ?? null,
+      dueDate: data.dueDate ? new Date(data.dueDate) : null,
+      notes: data.notes ?? null,
+      userId: ctx.userId,
+      items: { create: itemData },
+    },
+    select: { id: true },
+  });
+
+  await logAudit(ctx, {
+    action: "create",
+    table: "purchase_orders",
+    recordId: order.id,
+    newData: { orderNumber, status: "draft" },
+  });
+
+  return ok({ orderId: order.id });
+});
 
 // ============================================
 // 4.10 — OPERATIONS DASHBOARD (counts of open work)

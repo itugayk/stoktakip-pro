@@ -3,7 +3,7 @@ import type { Supplier } from "@/lib/types";
 
 type SupplierCreate = Prisma.SupplierUncheckedCreateInput;
 
-export function toSupplier(row: PrismaSupplier, totalOrders = 0): Supplier {
+export function toSupplier(row: PrismaSupplier, totalOrders = 0, balance = 0): Supplier {
   return {
     id: row.id,
     name: row.name,
@@ -12,6 +12,7 @@ export function toSupplier(row: PrismaSupplier, totalOrders = 0): Supplier {
     phone: row.phone ?? undefined,
     address: row.address ?? undefined,
     taxId: row.taxId ?? undefined,
+    balance,
     isActive: row.isActive,
     totalOrders,
     createdAt: typeof row.createdAt === "string" ? row.createdAt : row.createdAt.toISOString(),

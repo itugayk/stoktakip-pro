@@ -127,6 +127,8 @@ export interface Supplier {
   taxId?: string;
   isActive: boolean;
   totalOrders: number;
+  /** Derived cari balance: + = we owe the supplier (borç). */
+  balance?: number;
   createdAt: string;
 }
 
@@ -140,6 +142,10 @@ export interface Customer {
   taxId?: string;
   isActive: boolean;
   totalOrders: number;
+  /** Veresiye (credit) limit; 0 = unlimited / not set. */
+  creditLimit?: number;
+  /** Derived cari balance: + = customer owes us (alacak). */
+  balance?: number;
   createdAt: string;
 }
 

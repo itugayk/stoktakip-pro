@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  PackagePlus, Plus, Search, Eye, MoreHorizontal,
-  CheckCircle2, Clock, XCircle, Truck,
+  PackagePlus, Plus, Search, MoreHorizontal,
+  CheckCircle2, Clock, XCircle, Truck, Trash2,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,121 +23,124 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { demoSuppliers, demoProducts } from "@/lib/demo-data";
-import { PageHeader } from "@/components/shared";
+import { PageHeader, EmptyState } from "@/components/shared";
+import {
+  getPurchaseOrders, createPurchaseOrder, submitForApproval, approveOrder, cancelOrder,
+  getSuppliers, getProducts, getWarehouses,
+} from "@/lib/actions";
+import type { PurchaseOrderRow } from "@/lib/actions";
+import type { Supplier, ProductWithStock, Warehouse } from "@/lib/types";
 
-type OrderStatus = "draft" | "pending" | "approved" | "received" | "cancelled";
+type PaymentMethodValue = "cash" | "card" | "bank_transfer" | "credit" | "check" | "other";
 
-interface PurchaseOrderItem {
-  productId: string;
-  productName: string;
-  quantity: number;
-  unitPrice: number;
-}
-
-interface PurchaseOrder {
-  id: string;
-  orderNo: string;
-  supplierId: string;
-  supplierName: string;
-  status: OrderStatus;
-  items: PurchaseOrderItem[];
-  totalAmount: number;
-  notes?: string;
-  createdAt: string;
-  expectedDate?: string;
-}
-
-const statusConfig: Record<OrderStatus, { label: string; icon: typeof Clock; color: string }> = {
-  draft: { label: "Taslak", icon: Clock, color: "bg-gray-500/10 text-gray-500 border-gray-500/30" },
-  pending: { label: "Bekliyor", icon: Clock, color: "bg-amber-500/10 text-amber-500 border-amber-500/30" },
-  approved: { label: "Onaylı", icon: CheckCircle2, color: "bg-blue-500/10 text-blue-500 border-blue-500/30" },
-  received: { label: "Teslim Alındı", icon: Truck, color: "bg-emerald-500/10 text-emerald-500 border-emerald-500/30" },
-  cancelled: { label: "İptal", icon: XCircle, color: "bg-rose-500/10 text-rose-500 border-rose-500/30" },
+const statusConfig: Record<string, { label: string; color: string }> = {
+  draft: { label: "Taslak", color: "bg-gray-500/10 text-gray-500 border-gray-500/30" },
+  pending: { label: "Bekliyor", color: "bg-amber-500/10 text-amber-500 border-amber-500/30" },
+  approved: { label: "Onaylı", color: "bg-blue-500/10 text-blue-500 border-blue-500/30" },
+  partial: { label: "Kısmi", color: "bg-indigo-500/10 text-indigo-500 border-indigo-500/30" },
+  received: { label: "Teslim Alındı", color: "bg-emerald-500/10 text-emerald-500 border-emerald-500/30" },
+  cancelled: { label: "İptal", color: "bg-rose-500/10 text-rose-500 border-rose-500/30" },
 };
 
-const demoPurchaseOrders: PurchaseOrder[] = [
-  {
-    id: "po-1", orderNo: "PO-2026-001", supplierId: "sup-1", supplierName: "MedPharma A.Ş.",
-    status: "received", totalAmount: 6250,
-    items: [
-      { productId: "prod-1", productName: "Paracetamol 500mg", quantity: 500, unitPrice: 12.50 },
-    ],
-    createdAt: "2026-05-10", expectedDate: "2026-05-14",
-  },
-  {
-    id: "po-2", orderNo: "PO-2026-002", supplierId: "sup-1", supplierName: "MedPharma A.Ş.",
-    status: "approved", totalAmount: 7000,
-    items: [
-      { productId: "prod-3", productName: "Antibiyotik Kapsül 250mg", quantity: 200, unitPrice: 35.00 },
-    ],
-    createdAt: "2026-05-12", expectedDate: "2026-05-18",
-  },
-  {
-    id: "po-3", orderNo: "PO-2026-003", supplierId: "sup-3", supplierName: "CleanTech Kimya",
-    status: "pending", totalAmount: 4500,
-    items: [
-      { productId: "prod-10", productName: "El Dezenfektanı 500ml", quantity: 300, unitPrice: 15.00 },
-    ],
-    createdAt: "2026-05-13", expectedDate: "2026-05-20",
-  },
-  {
-    id: "po-4", orderNo: "PO-2026-004", supplierId: "sup-2", supplierName: "VitaPlus Ltd.",
-    status: "draft", totalAmount: 8500,
-    items: [
-      { productId: "prod-5", productName: "Omega 3 Balık Yağı", quantity: 100, unitPrice: 85.00 },
-    ],
-    createdAt: "2026-05-14",
-  },
-];
+const formatCurrency = (n: number) =>
+  new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(n);
+
+interface CartLine { productId: string; name: string; quantity: number; unitPrice: number }
 
 export default function PurchaseOrdersPage() {
-  const [orders, setOrders] = useState(demoPurchaseOrders);
+  const router = useRouter();
+  const [orders, setOrders] = useState<PurchaseOrderRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [products, setProducts] = useState<ProductWithStock[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [showAdd, setShowAdd] = useState(false);
-  const [showDetail, setShowDetail] = useState<PurchaseOrder | null>(null);
-  const [form, setForm] = useState({
-    supplierId: "", productId: "", quantity: "", unitPrice: "", notes: "", expectedDate: "",
-  });
+
+  // create form
+  const [supplierId, setSupplierId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodValue>("bank_transfer");
+  const [notes, setNotes] = useState("");
+  const [lines, setLines] = useState<CartLine[]>([]);
+  const [lineProduct, setLineProduct] = useState("");
+  const [lineQty, setLineQty] = useState("");
+  const [linePrice, setLinePrice] = useState("");
+
+  const refresh = () => {
+    getPurchaseOrders(undefined).then((r) => {
+      if (r.ok) setOrders(r.data);
+      else toast.error(r.error.message);
+      setLoading(false);
+    });
+  };
+
+  useEffect(() => {
+    refresh();
+    getSuppliers().then((r) => { if (r.ok) setSuppliers(r.data); });
+    getProducts(undefined).then((r) => { if (r.ok) setProducts(r.data); });
+    getWarehouses().then((r) => {
+      if (r.ok) { setWarehouses(r.data); if (r.data[0]) setWarehouseId(r.data[0].id); }
+    });
+  }, []);
 
   const filtered = useMemo(() => {
     let result = [...orders];
     if (search) {
       const q = search.toLowerCase();
-      result = result.filter((o) => o.orderNo.toLowerCase().includes(q) || o.supplierName.toLowerCase().includes(q));
+      result = result.filter((o) => o.orderNumber.toLowerCase().includes(q) || o.supplierName.toLowerCase().includes(q));
     }
     if (statusFilter !== "all") result = result.filter((o) => o.status === statusFilter);
-    return result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return result;
   }, [orders, search, statusFilter]);
 
-  const formatCurrency = (n: number) =>
-    new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(n);
-
-  const handleAdd = () => {
-    const supplier = demoSuppliers.find((s) => s.id === form.supplierId);
-    const product = demoProducts.find((p) => p.id === form.productId);
-    if (!supplier || !product || !form.quantity) { toast.error("Zorunlu alanları doldurun"); return; }
-    const qty = parseInt(form.quantity);
-    const price = parseFloat(form.unitPrice) || product.purchasePrice;
-    const po: PurchaseOrder = {
-      id: `po-${Date.now()}`, orderNo: `PO-2026-${String(orders.length + 1).padStart(3, "0")}`,
-      supplierId: supplier.id, supplierName: supplier.name, status: "draft",
-      items: [{ productId: product.id, productName: product.name, quantity: qty, unitPrice: price }],
-      totalAmount: qty * price, notes: form.notes || undefined, expectedDate: form.expectedDate || undefined,
-      createdAt: new Date().toISOString().split("T")[0],
-    };
-    setOrders((prev) => [po, ...prev]);
-    setShowAdd(false);
-    setForm({ supplierId: "", productId: "", quantity: "", unitPrice: "", notes: "", expectedDate: "" });
-    toast.success("Satın alma siparişi oluşturuldu");
+  const addLine = () => {
+    const p = products.find((x) => x.id === lineProduct);
+    if (!p || !lineQty) { toast.error("Ürün ve miktar seçin"); return; }
+    const qty = parseFloat(lineQty);
+    if (!(qty > 0)) { toast.error("Miktar 0'dan büyük olmalı"); return; }
+    const price = linePrice ? parseFloat(linePrice) : p.purchasePrice;
+    setLines((prev) => [...prev, { productId: p.id, name: p.name, quantity: qty, unitPrice: price }]);
+    setLineProduct(""); setLineQty(""); setLinePrice("");
   };
 
-  const updateStatus = (id: string, status: OrderStatus) => {
-    setOrders((prev) => prev.map((o) => o.id === id ? { ...o, status } : o));
-    toast.success(`Sipariş durumu güncellendi: ${statusConfig[status].label}`);
+  const cartTotal = lines.reduce((s, l) => s + l.quantity * l.unitPrice, 0);
+
+  const resetForm = () => {
+    setSupplierId(""); setDueDate(""); setPaymentMethod("bank_transfer"); setNotes("");
+    setLines([]); setLineProduct(""); setLineQty(""); setLinePrice("");
+  };
+
+  const handleCreate = async () => {
+    if (!supplierId) { toast.error("Tedarikçi seçin"); return; }
+    if (!warehouseId) { toast.error("Depo seçin"); return; }
+    if (lines.length === 0) { toast.error("En az bir kalem ekleyin"); return; }
+    const r = await createPurchaseOrder({
+      supplierId,
+      warehouseId,
+      notes: notes || undefined,
+      paymentMethod,
+      dueDate: dueDate || undefined,
+      items: lines.map((l) => ({ productId: l.productId, quantity: l.quantity, unitPrice: l.unitPrice })),
+    });
+    if (r.ok) { toast.success("Satın alma siparişi oluşturuldu"); setShowAdd(false); resetForm(); refresh(); }
+    else { toast.error(r.error.message); }
+  };
+
+  const doSubmit = async (id: string) => {
+    const r = await submitForApproval({ orderId: id });
+    if (r.ok) { toast.success("Onaya gönderildi"); refresh(); } else { toast.error(r.error.message); }
+  };
+  const doApprove = async (id: string) => {
+    const r = await approveOrder({ orderId: id });
+    if (r.ok) { toast.success("Onaylandı"); refresh(); } else { toast.error(r.error.message); }
+  };
+  const doCancel = async (id: string) => {
+    const r = await cancelOrder({ orderId: id });
+    if (r.ok) { toast.success("İptal edildi"); refresh(); } else { toast.error(r.error.message); }
   };
 
   return (
@@ -146,13 +150,12 @@ export default function PurchaseOrdersPage() {
         description={`${filtered.length} sipariş`}
         breadcrumb={[{ label: "Siparişler" }, { label: "Satın Alma" }]}
         actions={
-          <Button onClick={() => setShowAdd(true)}>
+          <Button onClick={() => { resetForm(); setShowAdd(true); }}>
             <Plus className="mr-2 h-4 w-4" />Yeni Sipariş
           </Button>
         }
       />
 
-      {/* Filters */}
       <Card>
         <CardContent className="p-4 flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
@@ -166,6 +169,7 @@ export default function PurchaseOrdersPage() {
               <SelectItem value="draft">Taslak</SelectItem>
               <SelectItem value="pending">Bekliyor</SelectItem>
               <SelectItem value="approved">Onaylı</SelectItem>
+              <SelectItem value="partial">Kısmi</SelectItem>
               <SelectItem value="received">Teslim Alındı</SelectItem>
               <SelectItem value="cancelled">İptal</SelectItem>
             </SelectContent>
@@ -173,7 +177,6 @@ export default function PurchaseOrdersPage() {
         </CardContent>
       </Card>
 
-      {/* Orders Table */}
       <Card>
         <CardContent className="p-0">
           <Table>
@@ -182,213 +185,176 @@ export default function PurchaseOrdersPage() {
                 <TableHead>Sipariş No</TableHead>
                 <TableHead>Tedarikçi</TableHead>
                 <TableHead>Durum</TableHead>
+                <TableHead>Ödeme</TableHead>
                 <TableHead className="text-right">Tutar</TableHead>
                 <TableHead>Tarih</TableHead>
                 <TableHead className="text-center w-[60px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((order) => {
-                const sc = statusConfig[order.status];
-                return (
-                  <TableRow key={order.id} className="group hover:bg-muted/50 cursor-pointer" onClick={() => setShowDetail(order)}>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <PackagePlus className="h-4 w-4 text-primary" />
-                        <span className="font-mono font-medium text-sm">{order.orderNo}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm">{order.supplierName}</TableCell>
-                    <TableCell>
-                      <Badge className={`text-[10px] ${sc.color}`}>{sc.label}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums text-sm">{formatCurrency(order.totalAmount)}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {new Date(order.createdAt).toLocaleDateString("tr-TR", { day: "numeric", month: "short" })}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 md:opacity-0 md:group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShowDetail(order); }}>
-                            <Eye className="mr-2 h-4 w-4" />Detay
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          {order.status === "draft" && (
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); updateStatus(order.id, "pending"); }}>
-                              <Clock className="mr-2 h-4 w-4" />Onaya Gönder
-                            </DropdownMenuItem>
-                          )}
-                          {order.status === "pending" && (
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); updateStatus(order.id, "approved"); }}>
-                              <CheckCircle2 className="mr-2 h-4 w-4" />Onayla
-                            </DropdownMenuItem>
-                          )}
-                          {order.status === "approved" && (
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); updateStatus(order.id, "received"); }}>
-                              <Truck className="mr-2 h-4 w-4" />Teslim Alındı
-                            </DropdownMenuItem>
-                          )}
-                          {order.status !== "cancelled" && order.status !== "received" && (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem className="text-destructive" onClick={(e) => { e.stopPropagation(); updateStatus(order.id, "cancelled"); }}>
-                                <XCircle className="mr-2 h-4 w-4" />İptal Et
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {filtered.length === 0 && (
+              {loading ? (
+                [1, 2, 3].map((i) => (
+                  <TableRow key={i}><TableCell colSpan={7}><div className="h-8 rounded bg-muted/50 animate-pulse" /></TableCell></TableRow>
+                ))
+              ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
-                    <PackagePlus className="mx-auto h-10 w-10 mb-3 opacity-30" />
-                    <p>Sipariş bulunamadı</p>
+                  <TableCell colSpan={7}>
+                    <EmptyState icon={PackagePlus} title="Sipariş bulunamadı" description="Yeni satın alma siparişi oluşturun." />
                   </TableCell>
                 </TableRow>
+              ) : (
+                filtered.map((order) => {
+                  const sc = statusConfig[order.status] ?? statusConfig.draft;
+                  const payLabel = order.paymentStatus === "paid" ? "Ödendi" : order.paymentStatus === "partial" ? "Kısmi" : "Ödenmedi";
+                  return (
+                    <TableRow key={order.id} className="group hover:bg-muted/50">
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <PackagePlus className="h-4 w-4 text-primary" />
+                          <span className="font-mono font-medium text-sm">{order.orderNumber}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm">{order.supplierName}</TableCell>
+                      <TableCell><Badge className={`text-[10px] ${sc.color}`}>{sc.label}</Badge></TableCell>
+                      <TableCell>
+                        <span className={`text-xs ${order.paymentStatus === "paid" ? "text-emerald-500" : order.paymentStatus === "partial" ? "text-amber-500" : "text-rose-500"}`}>
+                          {payLabel}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums text-sm">{formatCurrency(order.totalAmount)}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {new Date(order.orderDate).toLocaleDateString("tr-TR", { day: "numeric", month: "short" })}
+                      </TableCell>
+                      <TableCell>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 md:opacity-0 md:group-hover:opacity-100">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {order.status === "draft" && (
+                              <DropdownMenuItem onClick={() => doSubmit(order.id)}>
+                                <Clock className="mr-2 h-4 w-4" />Onaya Gönder
+                              </DropdownMenuItem>
+                            )}
+                            {order.status === "pending" && (
+                              <DropdownMenuItem onClick={() => doApprove(order.id)}>
+                                <CheckCircle2 className="mr-2 h-4 w-4" />Onayla
+                              </DropdownMenuItem>
+                            )}
+                            {(order.status === "approved" || order.status === "partial") && (
+                              <DropdownMenuItem onClick={() => router.push(`/dashboard/orders/purchase/${order.id}/receive`)}>
+                                <Truck className="mr-2 h-4 w-4" />Mal Kabul
+                              </DropdownMenuItem>
+                            )}
+                            {(order.status === "draft" || order.status === "pending") && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-destructive" onClick={() => doCancel(order.id)}>
+                                  <XCircle className="mr-2 h-4 w-4" />İptal Et
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
 
-      {/* Detail Dialog */}
-      {showDetail && (
-        <Dialog open={!!showDetail} onOpenChange={() => setShowDetail(null)}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <PackagePlus className="h-5 w-5 text-primary" />{showDetail.orderNo}
-              </DialogTitle>
-              <DialogDescription>{showDetail.supplierName}</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Durum</span>
-                <Badge className={`${statusConfig[showDetail.status].color}`}>{statusConfig[showDetail.status].label}</Badge>
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <p className="text-xs font-medium text-muted-foreground uppercase">Kalemler</p>
-                {showDetail.items.map((item, i) => (
-                  <div key={i} className="flex items-center justify-between text-sm">
-                    <span>{item.productName}</span>
-                    <span className="tabular-nums">{item.quantity} × {formatCurrency(item.unitPrice)}</span>
-                  </div>
-                ))}
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between font-semibold">
-                <span>Toplam</span>
-                <span>{formatCurrency(showDetail.totalAmount)}</span>
-              </div>
-              {showDetail.expectedDate && (
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Beklenen Teslim</span>
-                  <span>{new Date(showDetail.expectedDate).toLocaleDateString("tr-TR")}</span>
-                </div>
-              )}
-              {showDetail.status !== "received" && showDetail.status !== "cancelled" && (
-                <>
-                  <Separator />
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-muted-foreground uppercase">Durum Değiştir</p>
-                    <div className="flex flex-wrap gap-2">
-                      {showDetail.status !== "draft" && (
-                        <Button size="sm" variant="outline" onClick={() => { updateStatus(showDetail.id, "draft"); setShowDetail({ ...showDetail, status: "draft" }); }}>
-                          <Clock className="mr-1.5 h-3.5 w-3.5" />Taslağa Dön
-                        </Button>
-                      )}
-                      {showDetail.status === "draft" && (
-                        <Button size="sm" variant="outline" onClick={() => { updateStatus(showDetail.id, "pending"); setShowDetail({ ...showDetail, status: "pending" }); }}>
-                          <Clock className="mr-1.5 h-3.5 w-3.5 text-amber-500" />Onaya Gönder
-                        </Button>
-                      )}
-                      {showDetail.status === "pending" && (
-                        <Button size="sm" variant="outline" onClick={() => { updateStatus(showDetail.id, "approved"); setShowDetail({ ...showDetail, status: "approved" }); }}>
-                          <CheckCircle2 className="mr-1.5 h-3.5 w-3.5 text-blue-500" />Onayla
-                        </Button>
-                      )}
-                      {showDetail.status === "approved" && (
-                        <Button size="sm" variant="outline" onClick={() => { updateStatus(showDetail.id, "received"); setShowDetail({ ...showDetail, status: "received" }); }}>
-                          <Truck className="mr-1.5 h-3.5 w-3.5 text-emerald-500" />Teslim Alındı
-                        </Button>
-                      )}
-                      <Button size="sm" variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={() => { updateStatus(showDetail.id, "cancelled"); setShowDetail({ ...showDetail, status: "cancelled" }); }}>
-                        <XCircle className="mr-1.5 h-3.5 w-3.5" />İptal Et
-                      </Button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowDetail(null)}>Kapat</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-
-      {/* Add Dialog */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Yeni Satın Alma Siparişi</DialogTitle>
-            <DialogDescription>Tedarikçiye sipariş oluşturun</DialogDescription>
+            <DialogDescription>Tedarikçiye sipariş oluşturun (taslak olarak açılır)</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
-            <div className="grid gap-2">
-              <Label>Tedarikçi *</Label>
-              <Select value={form.supplierId} onValueChange={(v) => setForm({ ...form, supplierId: v || "" })}>
-                <SelectTrigger><SelectValue placeholder="Tedarikçi seçin" /></SelectTrigger>
-                <SelectContent>
-                  {demoSuppliers.filter((s) => s.isActive).map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label>Ürün *</Label>
-              <Select value={form.productId} onValueChange={(v) => setForm({ ...form, productId: v || "" })}>
-                <SelectTrigger><SelectValue placeholder="Ürün seçin" /></SelectTrigger>
-                <SelectContent>
-                  {demoProducts.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
-                <Label>Miktar *</Label>
-                <Input type="number" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} placeholder="0" />
+                <Label>Tedarikçi *</Label>
+                <Select value={supplierId} onValueChange={(v) => setSupplierId(v || "")}>
+                  <SelectTrigger><SelectValue placeholder="Tedarikçi seçin" /></SelectTrigger>
+                  <SelectContent>
+                    {suppliers.filter((s) => s.isActive).map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="grid gap-2">
-                <Label>Birim Fiyat</Label>
-                <Input type="number" step="0.01" value={form.unitPrice} onChange={(e) => setForm({ ...form, unitPrice: e.target.value })} placeholder="Otomatik" />
+                <Label>Depo *</Label>
+                <Select value={warehouseId} onValueChange={(v) => setWarehouseId(v || "")}>
+                  <SelectTrigger><SelectValue placeholder="Depo seçin" /></SelectTrigger>
+                  <SelectContent>
+                    {warehouses.map((w) => (<SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
-            <div className="grid gap-2">
-              <Label>Beklenen Teslim Tarihi</Label>
-              <Input type="date" value={form.expectedDate} onChange={(e) => setForm({ ...form, expectedDate: e.target.value })} />
+
+            {/* Line builder */}
+            <div className="rounded-lg border border-border p-3 space-y-3">
+              <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-end">
+                <div className="grid gap-1 min-w-0">
+                  <Label className="text-xs">Ürün</Label>
+                  <Select value={lineProduct} onValueChange={(v) => setLineProduct(v || "")}>
+                    <SelectTrigger><SelectValue placeholder="Ürün" /></SelectTrigger>
+                    <SelectContent>
+                      {products.map((p) => (<SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-1 w-20"><Label className="text-xs">Adet</Label><Input type="number" value={lineQty} onChange={(e) => setLineQty(e.target.value)} /></div>
+                <div className="grid gap-1 w-24"><Label className="text-xs">Fiyat</Label><Input type="number" step="0.01" value={linePrice} onChange={(e) => setLinePrice(e.target.value)} placeholder="Oto" /></div>
+                <Button type="button" size="icon" onClick={addLine}><Plus className="h-4 w-4" /></Button>
+              </div>
+              {lines.length > 0 && (
+                <div className="divide-y divide-border rounded border border-border">
+                  {lines.map((l, i) => (
+                    <div key={i} className="flex items-center justify-between px-3 py-1.5 text-sm">
+                      <span className="truncate">{l.name}</span>
+                      <span className="flex items-center gap-2 tabular-nums">
+                        {l.quantity} × {formatCurrency(l.unitPrice)}
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setLines((p) => p.filter((_, j) => j !== i))}>
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between px-3 py-2 font-semibold text-sm bg-muted/30">
+                    <span>Ara Toplam</span><span className="tabular-nums">{formatCurrency(cartTotal)}</span>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="grid gap-2">
-              <Label>Not</Label>
-              <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Sipariş notu..." />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label>Ödeme Yöntemi</Label>
+                <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod((v || "bank_transfer") as PaymentMethodValue)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="bank_transfer">Havale/EFT</SelectItem>
+                    <SelectItem value="cash">Nakit</SelectItem>
+                    <SelectItem value="card">Kart</SelectItem>
+                    <SelectItem value="credit">Veresiye (açık hesap)</SelectItem>
+                    <SelectItem value="check">Çek/Senet</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2"><Label>Vade Tarihi</Label><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
             </div>
+            <div className="grid gap-2"><Label>Not</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Sipariş notu..." /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAdd(false)}>İptal</Button>
-            <Button onClick={handleAdd}>Sipariş Oluştur</Button>
+            <Button onClick={handleCreate}>Sipariş Oluştur</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

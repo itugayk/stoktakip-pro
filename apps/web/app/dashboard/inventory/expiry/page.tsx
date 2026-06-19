@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { CalendarClock, AlertTriangle, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -8,27 +8,35 @@ import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow,
 } from "@/components/ui/table";
-import { demoLots } from "@/lib/demo-data";
-import { PageHeader } from "@/components/shared";
+import { toast } from "sonner";
+import { PageHeader, EmptyState } from "@/components/shared";
+import { getExpiringLots } from "@/lib/actions";
+
+type Lot = {
+  id: string;
+  productName: string;
+  lotNumber: string;
+  warehouseName: string;
+  quantity: number;
+  expiryDate?: string;
+  daysLeft: number;
+};
 
 export default function ExpiryTrackingPage() {
-  const lotsWithDays = useMemo(() => {
-    const today = new Date();
+  const [lots, setLots] = useState<Lot[]>([]);
+  const [loading, setLoading] = useState(true);
 
-    return demoLots
-      .filter((l) => l.expiryDate)
-      .map((lot) => {
-        const expiry = new Date(lot.expiryDate!);
-        const diffMs = expiry.getTime() - today.getTime();
-        const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-        return { ...lot, daysLeft };
-      })
-      .sort((a, b) => a.daysLeft - b.daysLeft);
+  useEffect(() => {
+    getExpiringLots().then((r) => {
+      if (r.ok) setLots([...r.data].sort((a, b) => a.daysLeft - b.daysLeft));
+      else toast.error(r.error.message);
+      setLoading(false);
+    });
   }, []);
 
-  const expired = lotsWithDays.filter((l) => l.daysLeft <= 0);
-  const expiringSoon = lotsWithDays.filter((l) => l.daysLeft > 0 && l.daysLeft <= 30);
-  const safe = lotsWithDays.filter((l) => l.daysLeft > 30);
+  const expired = lots.filter((l) => l.daysLeft <= 0);
+  const expiringSoon = lots.filter((l) => l.daysLeft > 0 && l.daysLeft <= 30);
+  const safe = lots.filter((l) => l.daysLeft > 30);
 
   const statusBadge = (daysLeft: number) => {
     if (daysLeft <= 0) return <Badge variant="destructive" className="text-[10px]">Süresi Geçmiş</Badge>;
@@ -51,7 +59,6 @@ export default function ExpiryTrackingPage() {
         breadcrumb={[{ label: "Stok", href: "/dashboard/inventory" }, { label: "SKT Takibi" }]}
       />
 
-      {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-3">
         {stats.map((s) => (
           <Card key={s.label} className="stat-card">
@@ -68,7 +75,6 @@ export default function ExpiryTrackingPage() {
         ))}
       </div>
 
-      {/* Table */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
@@ -77,43 +83,40 @@ export default function ExpiryTrackingPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Ürün</TableHead>
-                <TableHead>Lot No</TableHead>
-                <TableHead>Depo</TableHead>
-                <TableHead className="text-right">Miktar</TableHead>
-                <TableHead>SKT</TableHead>
-                <TableHead className="text-center">Durum</TableHead>
-                <TableHead>Aciliyet</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {lotsWithDays.map((lot) => (
-                <TableRow key={lot.id} className={lot.daysLeft <= 0 ? "bg-destructive/5" : lot.daysLeft <= 7 ? "bg-amber-500/5" : ""}>
-                  <TableCell className="font-medium text-sm">{lot.productName}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{lot.lotNumber}</TableCell>
-                  <TableCell className="text-sm">{lot.warehouseName}</TableCell>
-                  <TableCell className="text-right font-semibold tabular-nums">{lot.quantity}</TableCell>
-                  <TableCell className="text-sm">
-                    {new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(lot.expiryDate!))}
-                  </TableCell>
-                  <TableCell className="text-center">{statusBadge(lot.daysLeft)}</TableCell>
-                  <TableCell>
-                    <div className="w-20 h-1.5 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          lot.daysLeft <= 0 ? "bg-rose-500" : lot.daysLeft <= 7 ? "bg-rose-500" : lot.daysLeft <= 30 ? "bg-amber-500" : "bg-emerald-500"
-                        }`}
-                        style={{ width: `${Math.max(5, Math.min(100, 100 - lot.daysLeft))}%` }}
-                      />
-                    </div>
-                  </TableCell>
+          {loading ? (
+            <div className="p-6 space-y-2">{[1, 2, 3].map((i) => (<div key={i} className="h-10 rounded bg-muted/50 animate-pulse" />))}</div>
+          ) : lots.length === 0 ? (
+            <EmptyState icon={CalendarClock} title="Takip edilen lot yok" description="Miadlı ürün girişi yaptığınızda burada görünür." />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Ürün</TableHead>
+                  <TableHead>Lot No</TableHead>
+                  <TableHead>Depo</TableHead>
+                  <TableHead className="text-right">Miktar</TableHead>
+                  <TableHead>SKT</TableHead>
+                  <TableHead className="text-center">Durum</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {lots.map((lot) => (
+                  <TableRow key={lot.id} className={lot.daysLeft <= 0 ? "bg-destructive/5" : lot.daysLeft <= 7 ? "bg-amber-500/5" : ""}>
+                    <TableCell className="font-medium text-sm">{lot.productName}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{lot.lotNumber || "—"}</TableCell>
+                    <TableCell className="text-sm">{lot.warehouseName}</TableCell>
+                    <TableCell className="text-right font-semibold tabular-nums">{lot.quantity}</TableCell>
+                    <TableCell className="text-sm">
+                      {lot.expiryDate
+                        ? new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(lot.expiryDate))
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-center">{statusBadge(lot.daysLeft)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -151,6 +151,16 @@ export interface StatementRow {
   balance: number;
 }
 
+/**
+ * Account statement (cari ekstre) for a customer or supplier.
+ *
+ * Balance is shown from "our" perspective:
+ *  - customer: balance > 0 → they owe us (debit = billed, credit = paid in)
+ *  - supplier: balance > 0 → we owe them (debit = purchased, credit = paid out)
+ *
+ * Sources merged: orders + POS sales (customers) + payments. Drafts/cancelled
+ * orders are excluded so unconfirmed paperwork doesn't show as debt.
+ */
 export const getPartnerStatement = withCompany<
   z.input<typeof statementSchema>,
   StatementRow[]
@@ -160,59 +170,92 @@ export const getPartnerStatement = withCompany<
   const dateFilter: { gte?: Date; lte?: Date } = {};
   if (data.from) dateFilter.gte = new Date(data.from);
   if (data.to) dateFilter.lte = new Date(data.to);
+  const inDate = Object.keys(dateFilter).length ? dateFilter : undefined;
 
-  let orders: {
+  interface Entry {
+    date: Date;
     orderNumber: string;
-    orderDate: Date;
-    totalAmount: Prisma.Decimal;
-    status: string;
-  }[];
+    description: string;
+    debit: number;
+    credit: number;
+  }
+  const entries: Entry[] = [];
 
   if (data.partnerType === "customer") {
-    orders = await ctx.prisma.salesOrder.findMany({
-      where: {
-        companyId: ctx.companyId,
-        customerId: data.partnerId,
-        ...(Object.keys(dateFilter).length ? { orderDate: dateFilter } : {}),
-      },
-      orderBy: { orderDate: "asc" },
-      select: {
-        orderNumber: true,
-        orderDate: true,
-        totalAmount: true,
-        status: true,
-      },
-    });
+    const [orders, sales, payments] = await Promise.all([
+      ctx.prisma.salesOrder.findMany({
+        where: {
+          companyId: ctx.companyId,
+          customerId: data.partnerId,
+          status: { in: ["approved", "shipped", "delivered"] },
+          ...(inDate ? { orderDate: inDate } : {}),
+        },
+        select: { orderNumber: true, orderDate: true, totalAmount: true, status: true },
+      }),
+      ctx.prisma.sale.findMany({
+        where: {
+          companyId: ctx.companyId,
+          customerId: data.partnerId,
+          status: "completed",
+          ...(inDate ? { createdAt: inDate } : {}),
+        },
+        select: { saleNumber: true, createdAt: true, totalAmount: true },
+      }),
+      ctx.prisma.payment.findMany({
+        where: {
+          companyId: ctx.companyId,
+          customerId: data.partnerId,
+          direction: "inbound",
+          ...(inDate ? { paidAt: inDate } : {}),
+        },
+        select: { reference: true, paidAt: true, amount: true, method: true },
+      }),
+    ]);
+    for (const o of orders)
+      entries.push({ date: o.orderDate, orderNumber: o.orderNumber, description: `Sipariş (${o.status})`, debit: Number(o.totalAmount), credit: 0 });
+    for (const s of sales)
+      entries.push({ date: s.createdAt, orderNumber: s.saleNumber, description: "Satış (peşin/veresiye)", debit: Number(s.totalAmount), credit: 0 });
+    for (const p of payments)
+      entries.push({ date: p.paidAt, orderNumber: p.reference ?? "—", description: `Tahsilat (${p.method})`, debit: 0, credit: Number(p.amount) });
   } else {
-    orders = await ctx.prisma.purchaseOrder.findMany({
-      where: {
-        companyId: ctx.companyId,
-        supplierId: data.partnerId,
-        ...(Object.keys(dateFilter).length ? { orderDate: dateFilter } : {}),
-      },
-      orderBy: { orderDate: "asc" },
-      select: {
-        orderNumber: true,
-        orderDate: true,
-        totalAmount: true,
-        status: true,
-      },
-    });
+    const [orders, payments] = await Promise.all([
+      ctx.prisma.purchaseOrder.findMany({
+        where: {
+          companyId: ctx.companyId,
+          supplierId: data.partnerId,
+          status: { in: ["approved", "received", "partial"] },
+          ...(inDate ? { orderDate: inDate } : {}),
+        },
+        select: { orderNumber: true, orderDate: true, totalAmount: true, status: true },
+      }),
+      ctx.prisma.payment.findMany({
+        where: {
+          companyId: ctx.companyId,
+          supplierId: data.partnerId,
+          direction: "outbound",
+          ...(inDate ? { paidAt: inDate } : {}),
+        },
+        select: { reference: true, paidAt: true, amount: true, method: true },
+      }),
+    ]);
+    for (const o of orders)
+      entries.push({ date: o.orderDate, orderNumber: o.orderNumber, description: `Alış (${o.status})`, debit: Number(o.totalAmount), credit: 0 });
+    for (const p of payments)
+      entries.push({ date: p.paidAt, orderNumber: p.reference ?? "—", description: `Ödeme (${p.method})`, debit: 0, credit: Number(p.amount) });
   }
+
+  entries.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   let balance = 0;
   return ok(
-    orders.map((o) => {
-      const amount = Number(o.totalAmount ?? 0);
-      const debit = data.partnerType === "customer" ? amount : 0;
-      const credit = data.partnerType === "customer" ? 0 : amount;
-      balance += debit - credit;
+    entries.map((e) => {
+      balance += e.debit - e.credit;
       return {
-        date: o.orderDate.toISOString().slice(0, 10),
-        orderNumber: o.orderNumber,
-        description: `${o.status} — ${o.orderNumber}`,
-        debit,
-        credit,
+        date: e.date.toISOString().slice(0, 10),
+        orderNumber: e.orderNumber,
+        description: e.description,
+        debit: e.debit,
+        credit: e.credit,
         balance,
       };
     })
