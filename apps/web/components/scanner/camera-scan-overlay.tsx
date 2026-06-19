@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { X, Volume2, VolumeX, Zap, CheckCircle2, XCircle, ScanLine } from "lucide-react";
 import type { ScannerResult } from "@/components/scanner/barcode-scanner";
+import { unlockAudio } from "@/lib/feedback";
 
 const BarcodeScanner = dynamic(
   () => import("@/components/scanner/barcode-scanner").then((m) => m.BarcodeScanner),
@@ -69,16 +71,22 @@ export function CameraScanOverlay({
 
   useEffect(() => {
     if (!open) return;
+    // Opening is triggered by a tap; resume the audio context so the first
+    // camera read (not a gesture itself) can beep.
+    unlockAudio();
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
   }, [open]);
 
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
   const handleScan = (r: ScannerResult) => onScan(r.text, r.format);
 
-  return (
+  // Portal to <body> so the layer escapes any transformed/overflow-clipped
+  // ancestor (e.g. a Radix dialog's translate-centered content) and always
+  // covers the true viewport — above the mobile bottom-nav, never buried.
+  return createPortal(
     <div className="camov-root fixed inset-0 z-[80] bg-black">
       {/* Camera feed */}
       <BarcodeScanner active={open} onScan={handleScan} onError={onError} className="absolute inset-0" />
@@ -169,7 +177,23 @@ export function CameraScanOverlay({
       {/* Scoped styles: make html5-qrcode's <video> cover the frame, hide its
           default shaded overlay, and lay out + animate the custom reticle. */}
       <style>{`
-        .camov-root video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+        /* Force html5-qrcode's injected container AND its <video> to fill the
+           full-screen layer. Without this the video renders as a short band
+           (percentage height resolves against an auto-height parent) and looks
+           like it's "stuck at the bottom". */
+        .camov-root [id^="barcode-scanner-"] {
+          position: absolute !important;
+          inset: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+        }
+        .camov-root video {
+          position: absolute !important;
+          inset: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          object-fit: cover !important;
+        }
         .camov-root #qr-shaded-region { display: none !important; }
         .camov-root img[alt="Info icon"] { display: none !important; }
         .camov-frame {
@@ -220,6 +244,7 @@ export function CameraScanOverlay({
           to   { transform: translateY(0); opacity: 1; }
         }
       `}</style>
-    </div>
+    </div>,
+    document.body
   );
 }

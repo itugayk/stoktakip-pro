@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
-import nextDynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import {
   Plus, Package, MoreHorizontal,
@@ -43,12 +42,8 @@ import {
 import { isClientDemoMode, mergeStoredDemoProducts, saveStoredDemoProduct } from "@/lib/demo-store";
 import { UNITS } from "@/lib/types";
 import type { ProductWithStock, Category } from "@/lib/types";
-import type { ScannerResult } from "@/components/scanner/barcode-scanner";
-
-const BarcodeScanner = nextDynamic(
-  () => import("@/components/scanner/barcode-scanner").then((mod) => mod.BarcodeScanner),
-  { ssr: false }
-);
+import { CameraScanOverlay, type ScanResultInfo } from "@/components/scanner/camera-scan-overlay";
+import { feedback, setFeedbackEnabled } from "@/lib/feedback";
 
 const STATUS_LABEL: Record<string, string> = {
   ok: "Normal",
@@ -83,6 +78,11 @@ export function ProductsPageClient() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingProduct, setEditingProduct] = useState<ProductWithStock | null>(null);
   const [barcodeScannerActive, setBarcodeScannerActive] = useState(false);
+  const [scanSoundEnabled, setScanSoundEnabled] = useState(true);
+  const [scanResult, setScanResult] = useState<ScanResultInfo | null>(null);
+  const [scanCount, setScanCount] = useState(0);
+
+  useEffect(() => { setFeedbackEnabled(scanSoundEnabled); }, [scanSoundEnabled]);
 
   // Bulk selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -342,27 +342,30 @@ export function ProductsPageClient() {
       return;
     }
 
+    setScanResult(null);
     setBarcodeScannerActive(true);
   };
 
-  const handleBarcodeScan = useCallback((result: ScannerResult) => {
-    const barcode = result.text.trim();
+  const handleBarcodeScan = useCallback((code: string, format?: string) => {
+    const barcode = code.trim();
     if (!barcode) return;
 
+    setScanCount((c) => c + 1);
     setNewProduct((prev) => ({ ...prev, barcode }));
-    setBarcodeScannerActive(false);
 
     const duplicate = products.find((product) => product.barcode === barcode);
     if (duplicate) {
-      toast.warning("Bu barkod zaten kayıtlı", {
-        description: `${duplicate.name} (${duplicate.sku})`,
-      });
+      feedback.warn();
+      setScanResult({ seq: Date.now(), found: false, title: "Bu barkod zaten kayıtlı", subtitle: `${duplicate.name} (${duplicate.sku})`, code: barcode });
+      setBarcodeScannerActive(false);
+      toast.warning("Bu barkod zaten kayıtlı", { description: `${duplicate.name} (${duplicate.sku})` });
       return;
     }
 
-    toast.success("Barkod forma eklendi", {
-      description: barcode,
-    });
+    feedback.ok();
+    setScanResult({ seq: Date.now(), found: true, title: "Barkod forma eklendi", subtitle: format, code: barcode });
+    setBarcodeScannerActive(false);
+    toast.success("Barkod forma eklendi", { description: barcode });
   }, [products]);
 
   const handleBarcodeError = useCallback((error: string) => {
@@ -813,15 +816,6 @@ export function ProductsPageClient() {
                 </div>
               </div>
             </div>
-            {barcodeScannerActive && (
-              <div className="rounded-lg border border-border bg-muted/40 p-3">
-                <BarcodeScanner
-                  onScan={handleBarcodeScan}
-                  onError={handleBarcodeError}
-                  active={barcodeScannerActive}
-                />
-              </div>
-            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Kategori</Label>
@@ -879,6 +873,21 @@ export function ProductsPageClient() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Full-screen camera scanner for the barcode field (escapes the dialog
+          so it's never clipped/buried). Reads one barcode → fills the form. */}
+      <CameraScanOverlay
+        open={barcodeScannerActive}
+        onClose={() => setBarcodeScannerActive(false)}
+        onScan={handleBarcodeScan}
+        onError={handleBarcodeError}
+        soundEnabled={scanSoundEnabled}
+        onToggleSound={() => setScanSoundEnabled((s) => !s)}
+        showBatch={false}
+        hint="Barkodu çerçeveye hizalayın — okununca forma eklenir"
+        result={scanResult}
+        scanCount={scanCount}
+      />
 
       {/* Edit Product Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
