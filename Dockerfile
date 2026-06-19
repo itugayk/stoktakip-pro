@@ -49,8 +49,10 @@ RUN pnpm exec prisma generate
 RUN pnpm build
 
 # --- Runner ---
-FROM node:22-alpine AS runner
-RUN apk add --no-cache openssl
+# `base`'ten türetilir (node:22-alpine + libc6-compat + openssl, CACHE'li): böylece
+# runner aşamasında ayrı `apk add` YOK → bu sunucunun aralıklı paket-CDN (apk) ağ
+# donmaları build'i kilitlemez. (openssl Prisma query engine için gerekli; base'ten gelir.)
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
