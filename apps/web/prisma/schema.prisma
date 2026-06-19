@@ -182,6 +182,47 @@ enum SyncJobStatus {
   failed
 }
 
+enum PaymentMethod {
+  cash
+  card
+  bank_transfer
+  credit
+  check
+  other
+}
+
+enum PaymentDirection {
+  inbound
+  outbound
+}
+
+enum PaymentStatus {
+  unpaid
+  partial
+  paid
+}
+
+enum DeliveryNoteType {
+  outbound
+  inbound
+}
+
+enum DeliveryNoteStatus {
+  draft
+  issued
+  delivered
+  cancelled
+}
+
+enum ExpenseCategory {
+  rent
+  salary
+  utilities
+  logistics
+  tax
+  other
+}
+
 // ============================================
 // CORE MODELS
 // ============================================
@@ -232,6 +273,10 @@ model Company {
   integrationConnections  IntegrationConnection[]
   syncJobs                SyncJob[]
   recipes                 Recipe[]
+  sales                   Sale[]
+  payments                Payment[]
+  deliveryNotes           DeliveryNote[]
+  expenses                Expense[]
 
   @@map("companies")
 }
@@ -283,6 +328,10 @@ model User {
   integrationConnections   IntegrationConnection[]
   passwordResetTokens      PasswordResetToken[]
   emailVerificationTokens  EmailVerificationToken[]
+  sales                    Sale[]
+  payments                 Payment[]
+  deliveryNotes            DeliveryNote[]
+  expenses                 Expense[]
 
   @@index([companyId])
   @@map("users")
@@ -375,6 +424,8 @@ model Product {
   priceListItems    PriceListItem[]
   recipes            Recipe[]            @relation("RecipeProduct")
   recipeComponents   RecipeItem[]        @relation("RecipeComponentProduct")
+  saleItems          SaleItem[]
+  deliveryNoteItems  DeliveryNoteItem[]
 
   @@unique([companyId, sku])
   @@index([companyId])
@@ -406,6 +457,8 @@ model Warehouse {
   salesOrders      SalesOrder[]
   stockCounts      StockCount[]
   returns          Return[]
+  sales            Sale[]
+  deliveryNotes    DeliveryNote[]
 
   @@unique([companyId, name])
   @@index([companyId])
@@ -507,6 +560,8 @@ model Supplier {
   company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   purchaseOrders PurchaseOrder[]
   returns        Return[]
+  payments       Payment[]
+  deliveryNotes  DeliveryNote[]
 
   @@unique([companyId, name])
   @@index([companyId])
@@ -523,6 +578,7 @@ model Customer {
   address       String?
   taxId         String?      @map("tax_id")
   notes         String?
+  creditLimit   Decimal      @default(0) @map("credit_limit") @db.Decimal(12, 2)
   isActive      Boolean      @default(true) @map("is_active")
   createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt     DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
@@ -530,6 +586,9 @@ model Customer {
   company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   salesOrders   SalesOrder[]
   returns       Return[]
+  sales         Sale[]
+  payments      Payment[]
+  deliveryNotes DeliveryNote[]
 
   @@unique([companyId, name])
   @@index([companyId])
@@ -556,11 +615,18 @@ model PurchaseOrder {
   createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt    DateTime            @default(now()) @map("updated_at") @db.Timestamptz()
 
+  paymentMethod PaymentMethod?    @map("payment_method")
+  paidAmount    Decimal           @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  paymentStatus PaymentStatus     @default(unpaid) @map("payment_status")
+  dueDate       DateTime?         @map("due_date") @db.Date
+
   company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supplier  Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   warehouse Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   user      User                @relation(fields: [userId], references: [id])
   items     PurchaseOrderItem[]
+  payments      Payment[]
+  deliveryNotes DeliveryNote[]
 
   @@unique([companyId, orderNumber])
   @@map("purchase_orders")
@@ -606,12 +672,19 @@ model SalesOrder {
   createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt    DateTime         @default(now()) @map("updated_at") @db.Timestamptz()
 
+  paymentMethod PaymentMethod? @map("payment_method")
+  paidAmount    Decimal        @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  paymentStatus PaymentStatus  @default(unpaid) @map("payment_status")
+  dueDate       DateTime?      @map("due_date") @db.Date
+
   company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer  Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
   warehouse Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   user      User             @relation(fields: [userId], references: [id])
   picker    User?            @relation("SalesOrderPicker", fields: [pickedById], references: [id], onDelete: SetNull)
   items     SalesOrderItem[]
+  payments      Payment[]
+  deliveryNotes DeliveryNote[]
 
   @@unique([companyId, orderNumber])
   @@map("sales_orders")
@@ -1105,6 +1178,172 @@ model SyncJob {
 
   @@index([companyId, createdAt(sort: Desc)])
   @@map("sync_jobs")
+}
+
+// ============================================
+// SALES (POS) + PAYMENTS + DELIVERY NOTES + EXPENSES
+// ============================================
+
+/// Direct point-of-sale sale: drops stock immediately on completion.
+/// Distinct from the multi-step SalesOrder workflow.
+model Sale {
+  id            String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId     String        @map("company_id") @db.Uuid
+  customerId    String?       @map("customer_id") @db.Uuid
+  warehouseId   String        @map("warehouse_id") @db.Uuid
+  saleNumber    String        @map("sale_number")
+  subtotal      Decimal       @default(0) @db.Decimal(12, 2)
+  discount      Decimal       @default(0) @db.Decimal(12, 2)
+  taxAmount     Decimal       @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount   Decimal       @default(0) @map("total_amount") @db.Decimal(12, 2)
+  paymentMethod PaymentMethod @default(cash) @map("payment_method")
+  paidAmount    Decimal       @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  paymentStatus PaymentStatus @default(paid) @map("payment_status")
+  status        String        @default("completed")
+  notes         String?
+  userId        String        @map("user_id") @db.Uuid
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz()
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer      Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  warehouse     Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user          User           @relation(fields: [userId], references: [id])
+  items         SaleItem[]
+  payments      Payment[]
+  deliveryNotes DeliveryNote[]
+
+  @@unique([companyId, saleNumber])
+  @@index([companyId])
+  @@index([companyId, createdAt])
+  @@index([customerId])
+  @@map("sales")
+}
+
+model SaleItem {
+  id        String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  saleId    String  @map("sale_id") @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  quantity  Decimal @db.Decimal(12, 2)
+  unitPrice Decimal @map("unit_price") @db.Decimal(12, 2)
+  taxRate   Decimal @default(0) @map("tax_rate") @db.Decimal(5, 2)
+  lotNumber String? @map("lot_number")
+  total     Decimal @default(0) @db.Decimal(12, 2)
+
+  sale      Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+/// A payment in (tahsilat, from a customer) or out (tediye, to a supplier).
+/// Optionally linked to the sale/order it settles. Drives the cari (account) ledger.
+model Payment {
+  id              String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId       String           @map("company_id") @db.Uuid
+  direction       PaymentDirection
+  method          PaymentMethod    @default(cash)
+  amount          Decimal          @db.Decimal(12, 2)
+  customerId      String?          @map("customer_id") @db.Uuid
+  supplierId      String?          @map("supplier_id") @db.Uuid
+  salesOrderId    String?          @map("sales_order_id") @db.Uuid
+  purchaseOrderId String?          @map("purchase_order_id") @db.Uuid
+  saleId          String?          @map("sale_id") @db.Uuid
+  reference       String?
+  notes           String?
+  paidAt          DateTime         @default(now()) @map("paid_at") @db.Timestamptz()
+  userId          String           @map("user_id") @db.Uuid
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer      Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  salesOrder    SalesOrder?    @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  sale          Sale?          @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  user          User           @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, paidAt])
+  @@index([customerId])
+  @@index([supplierId])
+  @@map("payments")
+}
+
+/// İrsaliye (delivery note): outbound to a customer or inbound from a supplier.
+/// Printable document; can be generated from a sale/order or stand alone.
+model DeliveryNote {
+  id              String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId       String             @map("company_id") @db.Uuid
+  type            DeliveryNoteType
+  noteNumber      String             @map("note_number")
+  customerId      String?            @map("customer_id") @db.Uuid
+  supplierId      String?            @map("supplier_id") @db.Uuid
+  warehouseId     String?            @map("warehouse_id") @db.Uuid
+  salesOrderId    String?            @map("sales_order_id") @db.Uuid
+  purchaseOrderId String?            @map("purchase_order_id") @db.Uuid
+  saleId          String?            @map("sale_id") @db.Uuid
+  issueDate       DateTime           @default(dbgenerated("CURRENT_DATE")) @map("issue_date") @db.Date
+  status          DeliveryNoteStatus @default(issued)
+  notes           String?
+  createdById     String             @map("created_by") @db.Uuid
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime           @default(now()) @map("updated_at") @db.Timestamptz()
+
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer      Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier      Supplier?          @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  warehouse     Warehouse?         @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  salesOrder    SalesOrder?        @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  sale          Sale?              @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  createdBy     User               @relation(fields: [createdById], references: [id])
+  items         DeliveryNoteItem[]
+
+  @@unique([companyId, noteNumber])
+  @@index([companyId])
+  @@index([customerId])
+  @@index([supplierId])
+  @@map("delivery_notes")
+}
+
+model DeliveryNoteItem {
+  id             String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  deliveryNoteId String       @map("delivery_note_id") @db.Uuid
+  productId      String       @map("product_id") @db.Uuid
+  quantity       Decimal      @db.Decimal(12, 2)
+  unit           String       @default("adet")
+  unitPrice      Decimal?     @map("unit_price") @db.Decimal(12, 2)
+  lotNumber      String?      @map("lot_number")
+  description    String?
+
+  deliveryNote   DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([deliveryNoteId])
+  @@index([productId])
+  @@map("delivery_note_items")
+}
+
+/// Operating expense — needed for net (not just gross) profit in the P&L panel.
+model Expense {
+  id            String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  companyId     String          @map("company_id") @db.Uuid
+  category      ExpenseCategory @default(other)
+  amount        Decimal         @db.Decimal(12, 2)
+  expenseDate   DateTime        @default(dbgenerated("CURRENT_DATE")) @map("expense_date") @db.Date
+  description   String?
+  paymentMethod PaymentMethod   @default(cash) @map("payment_method")
+  userId        String          @map("user_id") @db.Uuid
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+
+  company       Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user          User            @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, expenseDate])
+  @@map("expenses")
 }
 
 // ============================================

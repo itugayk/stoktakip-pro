@@ -3,7 +3,7 @@ import type { Customer } from "@/lib/types";
 
 type CustomerCreate = Prisma.CustomerUncheckedCreateInput;
 
-export function toCustomer(row: PrismaCustomer, totalOrders = 0): Customer {
+export function toCustomer(row: PrismaCustomer, totalOrders = 0, balance = 0): Customer {
   return {
     id: row.id,
     name: row.name,
@@ -12,6 +12,8 @@ export function toCustomer(row: PrismaCustomer, totalOrders = 0): Customer {
     phone: row.phone ?? undefined,
     address: row.address ?? undefined,
     taxId: row.taxId ?? undefined,
+    creditLimit: Number(row.creditLimit ?? 0),
+    balance,
     isActive: row.isActive,
     totalOrders,
     createdAt: typeof row.createdAt === "string" ? row.createdAt : row.createdAt.toISOString(),
@@ -29,6 +31,7 @@ export function fromCustomer(
   if (c.phone !== undefined) out.phone = c.phone || null;
   if (c.address !== undefined) out.address = c.address || null;
   if (c.taxId !== undefined) out.taxId = c.taxId || null;
+  if (c.creditLimit !== undefined) out.creditLimit = c.creditLimit;
   if (c.isActive !== undefined) out.isActive = c.isActive;
   if (c.notes !== undefined) out.notes = c.notes || null;
   return out;

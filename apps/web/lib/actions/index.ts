@@ -30,11 +30,44 @@ export {
   deleteWarehouse,
   getSuppliers,
   createSupplier,
+  updateSupplier,
   deleteSupplier,
   getCustomers,
   createCustomer,
+  updateCustomer,
   deleteCustomer,
 } from "./operations";
+
+export {
+  createSale,
+  getSales,
+  getSale,
+  cancelSale,
+} from "./sales";
+export type { SaleRow, SaleDetail } from "./sales";
+
+export {
+  recordPayment,
+  listPayments,
+  deletePayment,
+} from "./payments";
+export type { PaymentRow } from "./payments";
+
+export {
+  createDeliveryNote,
+  listDeliveryNotes,
+  getDeliveryNote,
+  updateDeliveryNoteStatus,
+  deleteDeliveryNote,
+} from "./delivery-notes";
+export type { DeliveryNoteRow, DeliveryNoteDetail } from "./delivery-notes";
+
+export {
+  listExpenses,
+  createExpense,
+  deleteExpense,
+} from "./expenses";
+export type { ExpenseRow } from "./expenses";
 
 export { searchEverything } from "./search";
 export type { SearchResults } from "./search";
@@ -128,6 +161,8 @@ export {
   createSalesOrder,
   approveSalesOrder,
   cancelSalesOrder,
+  getPurchaseOrders,
+  createPurchaseOrder,
   getOperationsSummary,
 } from "./orders";
 export type {
@@ -135,6 +170,7 @@ export type {
   SOStatus,
   OperationsSummary,
   SalesOrderRow,
+  PurchaseOrderRow,
 } from "./orders";
 
 export {
@@ -169,6 +205,7 @@ export {
   getPeriodComparison,
   getProfitReport,
   getRevenueTrend,
+  getBusinessPnL,
 } from "./reports";
 export type {
   PeriodComparison,
@@ -176,6 +213,8 @@ export type {
   ProfitRow,
   TrendPoint,
   CostMethod,
+  BusinessPnL,
+  MethodAmount,
 } from "./reports";
 
 export {

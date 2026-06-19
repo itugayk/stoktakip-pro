@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import Link from "next/link";
 import {
   BarChart3, FileDown, TrendingUp, Package, CalendarClock,
   DollarSign, PieChart as PieChartIcon, ArrowUpRight,
-  ArrowDownRight, FileSpreadsheet,
+  ArrowDownRight, FileSpreadsheet, Wallet,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -190,6 +191,9 @@ export default function ReportsPage() {
         description="Stok durumu, hareketler ve finansal analiz"
         actions={
           <>
+            <Button asChild size="sm">
+              <Link href="/dashboard/reports/pnl"><Wallet className="mr-2 h-4 w-4" />İşletme Kâr/Zarar</Link>
+            </Button>
             <Select value={period} onValueChange={(value) => setPeriod(value ?? "7d")}>
               <SelectTrigger className="w-[140px]">
                 <SelectValue />

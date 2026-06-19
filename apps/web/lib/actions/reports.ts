@@ -1,6 +1,7 @@
 "use server";
 
 import { withAuth, ok, parseInput, z } from "@/lib/server";
+import { computePartyBalances } from "@/lib/cari/balance";
 
 // ============================================
 // 5.2 — COMPARATIVE PERIOD METRICS
@@ -337,4 +338,142 @@ export const getRevenueTrend = withAuth<
     points.push(byDate.get(key) ?? { date: key, revenue: 0, units: 0 });
   }
   return ok(points);
+});
+
+// ============================================
+// 5.5 — İŞLETME KÂR/ZARAR (business-level P&L + cash + cari snapshot)
+// ============================================
+
+export interface MethodAmount {
+  method: string;
+  amount: number;
+}
+
+export interface BusinessPnL {
+  from: string;
+  to: string;
+  revenue: number; // POS sales + shipped/delivered sales orders
+  cogs: number; // actual FEFO cost consumed (from out movements)
+  grossProfit: number;
+  grossMarginPct: number;
+  purchases: number; // received purchase orders
+  expenses: number; // operating expenses
+  netProfit: number; // grossProfit - expenses
+  receivables: number; // customers owe us (snapshot, all-time)
+  payables: number; // we owe suppliers (snapshot, all-time)
+  cashIn: MethodAmount[]; // payments received in period, by method
+  cashOut: MethodAmount[]; // payments made in period, by method
+  expenseByCategory: { category: string; amount: number }[];
+}
+
+const pnlSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+});
+
+export const getBusinessPnL = withAuth<
+  z.input<typeof pnlSchema>,
+  BusinessPnL
+>(async (ctx, raw) => {
+  const { from, to } = parseInput(pnlSchema, raw);
+  const gte = new Date(from);
+  const lte = new Date(to);
+
+  const [
+    saleAgg,
+    soAgg,
+    outMovements,
+    poAgg,
+    expenseAgg,
+    expenseByCat,
+    cashInAgg,
+    cashOutAgg,
+    balances,
+  ] = await Promise.all([
+    ctx.prisma.sale.aggregate({
+      where: { companyId: ctx.companyId, status: "completed", createdAt: { gte, lte } },
+      _sum: { totalAmount: true },
+    }),
+    ctx.prisma.salesOrder.aggregate({
+      where: {
+        companyId: ctx.companyId,
+        status: { in: ["shipped", "delivered"] },
+        orderDate: { gte, lte },
+      },
+      _sum: { totalAmount: true },
+    }),
+    ctx.prisma.stockMovement.findMany({
+      where: {
+        companyId: ctx.companyId,
+        movementType: "out",
+        referenceType: { in: ["sale", "sales_order"] },
+        createdAt: { gte, lte },
+      },
+      select: { quantity: true, unitCost: true },
+    }),
+    ctx.prisma.purchaseOrder.aggregate({
+      where: {
+        companyId: ctx.companyId,
+        status: { in: ["received", "partial"] },
+        orderDate: { gte, lte },
+      },
+      _sum: { totalAmount: true },
+    }),
+    ctx.prisma.expense.aggregate({
+      where: { companyId: ctx.companyId, expenseDate: { gte, lte } },
+      _sum: { amount: true },
+    }),
+    ctx.prisma.expense.groupBy({
+      by: ["category"],
+      where: { companyId: ctx.companyId, expenseDate: { gte, lte } },
+      _sum: { amount: true },
+    }),
+    ctx.prisma.payment.groupBy({
+      by: ["method"],
+      where: { companyId: ctx.companyId, direction: "inbound", paidAt: { gte, lte } },
+      _sum: { amount: true },
+    }),
+    ctx.prisma.payment.groupBy({
+      by: ["method"],
+      where: { companyId: ctx.companyId, direction: "outbound", paidAt: { gte, lte } },
+      _sum: { amount: true },
+    }),
+    computePartyBalances(ctx.prisma, ctx.companyId),
+  ]);
+
+  const revenue =
+    Number(saleAgg._sum.totalAmount ?? 0) + Number(soAgg._sum.totalAmount ?? 0);
+  const cogs = outMovements.reduce(
+    (s, m) => s + Number(m.quantity) * Number(m.unitCost ?? 0),
+    0
+  );
+  const grossProfit = revenue - cogs;
+  const purchases = Number(poAgg._sum.totalAmount ?? 0);
+  const expenses = Number(expenseAgg._sum.amount ?? 0);
+  const netProfit = grossProfit - expenses;
+
+  let receivables = 0;
+  for (const v of balances.customers.values()) if (v > 0) receivables += v;
+  let payables = 0;
+  for (const v of balances.suppliers.values()) if (v > 0) payables += v;
+
+  return ok({
+    from,
+    to,
+    revenue,
+    cogs,
+    grossProfit,
+    grossMarginPct: revenue > 0 ? grossProfit / revenue : 0,
+    purchases,
+    expenses,
+    netProfit,
+    receivables,
+    payables,
+    cashIn: cashInAgg.map((r) => ({ method: r.method, amount: Number(r._sum.amount ?? 0) })),
+    cashOut: cashOutAgg.map((r) => ({ method: r.method, amount: Number(r._sum.amount ?? 0) })),
+    expenseByCategory: expenseByCat.map((r) => ({
+      category: r.category,
+      amount: Number(r._sum.amount ?? 0),
+    })),
+  });
 });
