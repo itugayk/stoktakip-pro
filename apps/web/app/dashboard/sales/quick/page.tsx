@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ShoppingCart, Search, Plus, Minus, Trash2, ScanLine, CheckCircle2, Printer, Receipt,
+  ShoppingCart, Search, Plus, Minus, Trash2, ScanLine, CheckCircle2, Printer, Receipt, Camera,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,8 @@ import { PageHeader } from "@/components/shared";
 import { getProducts, getWarehouses, getCustomers, createSale, getSale, createDeliveryNote } from "@/lib/actions";
 import { generateDeliveryNotePdf } from "@/lib/pdf/delivery-note-pdf";
 import { scanDetector } from "@/lib/scan-detector";
-import { feedback } from "@/lib/feedback";
+import { feedback, setFeedbackEnabled } from "@/lib/feedback";
+import { CameraScanOverlay, type ScanResultInfo } from "@/components/scanner/camera-scan-overlay";
 import type { ProductWithStock, Warehouse, Customer } from "@/lib/types";
 
 type PaymentMethodValue = "cash" | "card" | "bank_transfer" | "credit" | "check";
@@ -51,7 +52,13 @@ export default function QuickSalePage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<{ saleId: string; saleNumber: string; total: number } | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanResult, setScanResult] = useState<ScanResultInfo | null>(null);
+  const [scanCount, setScanCount] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(true);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setFeedbackEnabled(soundEnabled); }, [soundEnabled]);
 
   useEffect(() => {
     getProducts(undefined).then((r) => { if (r.ok) setProducts(r.data); });
@@ -59,7 +66,7 @@ export default function QuickSalePage() {
     getCustomers().then((r) => { if (r.ok) setCustomers(r.data); });
   }, []);
 
-  const addToCart = (p: ProductWithStock) => {
+  const addToCart = useCallback((p: ProductWithStock) => {
     setCart((prev) => {
       const i = prev.findIndex((c) => c.productId === p.id);
       if (i >= 0) {
@@ -69,19 +76,28 @@ export default function QuickSalePage() {
       }
       return [...prev, { productId: p.id, name: p.name, sku: p.sku, unitPrice: p.salePrice, quantity: 1 }];
     });
-  };
+  }, []);
 
-  // Hardware/USB scanner support — scan a barcode to add the product to the cart.
-  useEffect(() => {
-    return scanDetector.start({
-      onScan: (code) => {
-        const norm = code.trim();
-        const p = products.find((x) => x.barcode === norm || x.sku === norm.toUpperCase());
-        if (p) { feedback.ok(); addToCart(p); }
-        else { feedback.error(); toast.error("Ürün bulunamadı", { description: norm }); }
-      },
-    });
-  }, [products]);
+  // Shared scan handler for both the camera overlay and HID/USB hardware scanners.
+  const handleScan = useCallback((code: string, format?: string) => {
+    const norm = code.trim();
+    if (!norm) return;
+    const p = products.find((x) => x.barcode === norm || x.sku === norm.toUpperCase());
+    setScanCount((c) => c + 1);
+    if (p) {
+      feedback.ok();
+      addToCart(p);
+      setScanResult({ seq: Date.now(), found: true, title: p.name, subtitle: `${formatCurrency(p.salePrice)} • sepete eklendi`, code: norm });
+      if (!cameraOpen) toast.success(`${p.name} sepete eklendi`, { duration: 1500 });
+    } else {
+      feedback.error();
+      setScanResult({ seq: Date.now(), found: false, title: "Ürün bulunamadı", subtitle: format, code: norm });
+      if (!cameraOpen) toast.error("Ürün bulunamadı", { description: norm, duration: 1500 });
+    }
+  }, [products, addToCart, cameraOpen]);
+
+  // Hardware/USB scanner support — page-wide.
+  useEffect(() => scanDetector.start({ onScan: (code) => handleScan(code) }), [handleScan]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return products.slice(0, 24);
@@ -172,16 +188,21 @@ export default function QuickSalePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
         {/* Product picker */}
         <div className="space-y-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              ref={searchRef}
-              autoFocus
-              placeholder="Ürün adı, SKU veya barkod ara / tara..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-12"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                ref={searchRef}
+                autoFocus
+                placeholder="Ürün adı, SKU veya barkod ara / tara..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9 h-12"
+              />
+            </div>
+            <Button variant="outline" className="h-12 shrink-0" onClick={() => { setScanResult(null); setCameraOpen(true); }}>
+              <Camera className="h-5 w-5 sm:mr-2" /><span className="hidden sm:inline">Kamera</span>
+            </Button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {filtered.map((p) => (
@@ -332,6 +353,18 @@ export default function QuickSalePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CameraScanOverlay
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onScan={(code, format) => handleScan(code, format)}
+        soundEnabled={soundEnabled}
+        onToggleSound={() => setSoundEnabled((s) => !s)}
+        showBatch={false}
+        hint="Sepete eklemek için barkodu okutun"
+        result={scanResult}
+        scanCount={scanCount}
+      />
     </div>
   );
 }
